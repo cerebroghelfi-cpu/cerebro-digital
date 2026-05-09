@@ -1,0 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { -webkit-tap-highlight-color: transparent; }
+html, body { overscroll-behavior-y: contain; }
+body { font-family: 'Inter', sans-serif; background: #fafaf9; }
