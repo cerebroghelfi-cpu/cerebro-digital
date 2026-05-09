@@ -157,21 +157,28 @@ const DriveAPI = {
   }
 };
 
-// Fusión inteligente: por nota individual gana la más reciente
+// Fusión inteligente con soporte de tombstones (notas marcadas como _deleted)
 function mergeData(local, remote) {
   const localNotes = local.notes || [];
   const remoteNotes = remote.notes || [];
   const localNotebooks = local.notebooks || [];
   const remoteNotebooks = remote.notebooks || [];
 
+  // Fusión por id: gana la versión con updatedAt más reciente, sea borrada o viva
   const noteMap = new Map();
   for (const n of localNotes) noteMap.set(n.id, n);
   for (const r of remoteNotes) {
     const ex = noteMap.get(r.id);
     if (!ex || (r.updatedAt || 0) > (ex.updatedAt || 0)) noteMap.set(r.id, r);
   }
-  // detectar borrados: si una nota está en local con _deleted=true y timestamp posterior al remoto -> queda borrada
-  const mergedNotes = Array.from(noteMap.values()).filter(n => !n._deleted);
+  // Las tombstones se conservan en el archivo sincronizado por 30 días
+  // pero NO se muestran en la UI (esa parte la maneja el filtro de visualización)
+  const TOMBSTONE_TTL = 30 * 24 * 60 * 60 * 1000; // 30 días
+  const now = Date.now();
+  const allNotes = Array.from(noteMap.values()).filter(n => {
+    if (n._deleted && n.deletedAt && (now - n.deletedAt) > TOMBSTONE_TTL) return false;
+    return true;
+  });
 
   const nbMap = new Map();
   for (const nb of localNotebooks) nbMap.set(nb.id, nb);
@@ -179,7 +186,7 @@ function mergeData(local, remote) {
     const ex = nbMap.get(r.id);
     if (!ex || (r.createdAt || 0) > (ex.createdAt || 0)) nbMap.set(r.id, r);
   }
-  return { notes: mergedNotes, notebooks: Array.from(nbMap.values()) };
+  return { notes: allNotes, notebooks: Array.from(nbMap.values()) };
 }
 
 // ====================================================================
@@ -540,17 +547,18 @@ export default function CerebroDigital() {
   }, [loaded, unlocked]);
 
   // Índice de búsqueda (recalculado al cambiar notas)
-  const searchIndex = useMemo(() => buildIndex(notes), [notes]);
+  const searchIndex = useMemo(() => buildIndex(notes.filter(n => !n._deleted)), [notes]);
 
   const allTags = useMemo(() => {
     const set = new Set();
-    notes.forEach(n => (n.tags || []).forEach(t => set.add(t)));
+    notes.filter(n => !n._deleted).forEach(n => (n.tags || []).forEach(t => set.add(t)));
     return Array.from(set).sort();
   }, [notes]);
 
   // Filtrado: usa búsqueda semántica si hay query
   const filteredNotes = useMemo(() => {
-    let res = notes;
+    // Excluir tombstones (notas marcadas como _deleted) de la UI
+    let res = notes.filter(n => !n._deleted);
 
     if (activeNotebook === 'inbox') res = res.filter(n => !n.notebookId);
     else if (activeNotebook) res = res.filter(n => n.notebookId === activeNotebook);
@@ -626,7 +634,16 @@ export default function CerebroDigital() {
     if (activeNote && activeNote.id === id) setActiveNote(prev => ({ ...prev, ...updates, updatedAt: Date.now() }));
   };
   const deleteNote = (id) => {
-    setNotes(prev => prev.map(n => ({ ...n, connections: (n.connections || []).filter(c => c !== id) })).filter(n => n.id !== id));
+    // Si Drive está conectado, usamos tombstone para que la eliminación se propague
+    // Si no, eliminamos de verdad
+    if (driveConnected) {
+      setNotes(prev => prev.map(n => {
+        if (n.id === id) return { ...n, _deleted: true, deletedAt: Date.now(), updatedAt: Date.now(), blocks: [], encryptedBlocks: null };
+        return { ...n, connections: (n.connections || []).filter(c => c !== id) };
+      }));
+    } else {
+      setNotes(prev => prev.map(n => ({ ...n, connections: (n.connections || []).filter(c => c !== id) })).filter(n => n.id !== id));
+    }
     if (activeNote && activeNote.id === id) { setActiveNote(null); setView('grid'); }
   };
 
@@ -661,7 +678,7 @@ export default function CerebroDigital() {
       `}</style>
 
       {view === 'grid' && (
-        <GridView notes={filteredNotes} allNotes={notes} notebooks={notebooks}
+        <GridView notes={filteredNotes} allNotes={notes.filter(n => !n._deleted)} notebooks={notebooks}
           searchQuery={searchQuery} setSearchQuery={setSearchQuery}
           activeTag={activeTag} setActiveTag={setActiveTag}
           activeNotebook={activeNotebook} setActiveNotebook={setActiveNotebook}
@@ -685,11 +702,11 @@ export default function CerebroDigital() {
           onManualSync={manualSync}
         />
       )}
-      {view === 'notebooks' && <NotebooksView notebooks={notebooks} notes={notes} onBack={() => setView('grid')} onSelect={(id) => { setActiveNotebook(id); setView('grid'); }} onCreate={createNotebook} onRename={renameNotebook} onRecolor={recolorNotebook} onDelete={deleteNotebook} />}
-      {view === 'tasks' && <TasksView notes={notes} onBack={() => setView('grid')} onOpen={(n) => { setActiveNote(n); setView('detail'); }} onUpdate={updateNote} />}
-      {view === 'chat' && <ChatView notes={notes} searchIndex={searchIndex} onBack={() => setView('grid')} onOpen={(n) => { setActiveNote(n); setView('detail'); }} />}
-      {view === 'detail' && activeNote && <DetailView note={activeNote} allNotes={notes} notebooks={notebooks} searchIndex={searchIndex} onBack={() => { setView('grid'); setActiveNote(null); }} onUpdate={updateNote} onDelete={deleteNote} onOpenNote={(id) => { const n = notes.find(x => x.id === id); if (n) setActiveNote(n); }} encryptNote={encryptNote} decryptNoteBlocks={decryptNoteBlocks} removeEncryption={removeEncryption} onExportNote={(n) => setShowExport(n)} allTags={allTags} />}
-      {view === 'graph' && <GraphView notes={notes} onBack={() => setView('grid')} onOpen={(n) => { setActiveNote(n); setView('detail'); }} />}
+      {view === 'notebooks' && <NotebooksView notebooks={notebooks} notes={notes.filter(n => !n._deleted)} onBack={() => setView('grid')} onSelect={(id) => { setActiveNotebook(id); setView('grid'); }} onCreate={createNotebook} onRename={renameNotebook} onRecolor={recolorNotebook} onDelete={deleteNotebook} />}
+      {view === 'tasks' && <TasksView notes={notes.filter(n => !n._deleted)} onBack={() => setView('grid')} onOpen={(n) => { setActiveNote(n); setView('detail'); }} onUpdate={updateNote} />}
+      {view === 'chat' && <ChatView notes={notes.filter(n => !n._deleted)} searchIndex={searchIndex} onBack={() => setView('grid')} onOpen={(n) => { setActiveNote(n); setView('detail'); }} />}
+      {view === 'detail' && activeNote && <DetailView note={activeNote} allNotes={notes.filter(n => !n._deleted)} notebooks={notebooks} searchIndex={searchIndex} onBack={() => { setView('grid'); setActiveNote(null); }} onUpdate={updateNote} onDelete={deleteNote} onOpenNote={(id) => { const n = notes.find(x => x.id === id && !x._deleted); if (n) setActiveNote(n); }} encryptNote={encryptNote} decryptNoteBlocks={decryptNoteBlocks} removeEncryption={removeEncryption} onExportNote={(n) => setShowExport(n)} allTags={allTags} />}
+      {view === 'graph' && <GraphView notes={notes.filter(n => !n._deleted)} onBack={() => setView('grid')} onOpen={(n) => { setActiveNote(n); setView('detail'); }} />}
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} securityConfig={securityConfig} setSecurityConfig={setSecurityConfig} driveConnected={driveConnected} syncStatus={syncStatus} syncError={syncError} lastSync={lastSync} onConnectDrive={connectDrive} onDisconnectDrive={disconnectDrive} onManualSync={manualSync} />}
       {showExport && <ExportModal note={showExport} onClose={() => setShowExport(null)} />}
     </div>
