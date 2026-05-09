@@ -1,5 +1,186 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Search, Plus, Mic, Image as ImageIcon, Link2, PenTool, FileText, Trash2, X, Network, Filter, Square, Eraser, Download, MoreVertical, Play, Pause, ArrowLeft, Star, Clock, Type, ChevronUp, ChevronDown, Lock, Unlock, Fingerprint, Shield, ShieldCheck, Eye, EyeOff, KeyRound, Folder, FolderPlus, Book, ChevronRight, FileDown, Clipboard, CheckSquare, Square as SquareEmpty, Sparkles, MessageSquare, Calendar, Tag as TagIcon, ListTodo, Wand2, Zap, Pin, PinOff, GripVertical, LayoutGrid, List as ListIcon, Rows3, Palette } from 'lucide-react';
+import { Search, Plus, Mic, Image as ImageIcon, Link2, PenTool, FileText, Trash2, X, Network, Filter, Square, Eraser, Download, MoreVertical, Play, Pause, ArrowLeft, Star, Clock, Type, ChevronUp, ChevronDown, Lock, Unlock, Fingerprint, Shield, ShieldCheck, Eye, EyeOff, KeyRound, Folder, FolderPlus, Book, ChevronRight, FileDown, Clipboard, CheckSquare, Square as SquareEmpty, Sparkles, MessageSquare, Calendar, Tag as TagIcon, ListTodo, Wand2, Zap, Pin, PinOff, GripVertical, LayoutGrid, List as ListIcon, Rows3, Palette, Cloud, CloudOff, RefreshCw, AlertCircle, CheckCircle2, LogOut } from 'lucide-react';
+
+// ====================================================================
+// GOOGLE DRIVE SYNC
+// ====================================================================
+// Client ID configurado en Google Cloud Console
+const GOOGLE_CLIENT_ID = '136553914693-t0kdbeb0ejkhnps2hitcimue36k13uje.apps.googleusercontent.com';
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
+const DRIVE_FILE_NAME = 'cerebro-data.json';
+
+const GoogleAuth = {
+  tokenClient: null,
+  accessToken: null,
+  expiresAt: 0,
+
+  async loadGsi() {
+    if (window.google?.accounts?.oauth2) return;
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.defer = true;
+      script.onload = resolve;
+      script.onerror = reject;
+      document.head.appendChild(script);
+    });
+  },
+
+  async init() {
+    await this.loadGsi();
+    if (!this.tokenClient) {
+      this.tokenClient = window.google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID,
+        scope: DRIVE_SCOPE,
+        callback: () => {} // se sobreescribe en cada solicitud
+      });
+    }
+  },
+
+  async signIn() {
+    await this.init();
+    return new Promise((resolve, reject) => {
+      this.tokenClient.callback = (resp) => {
+        if (resp.error) return reject(new Error(resp.error));
+        this.accessToken = resp.access_token;
+        this.expiresAt = Date.now() + (resp.expires_in - 60) * 1000;
+        // Persistir token y datos básicos del usuario
+        localStorage.setItem('gdrive-token', JSON.stringify({ token: this.accessToken, expiresAt: this.expiresAt }));
+        resolve(resp.access_token);
+      };
+      this.tokenClient.requestAccessToken({ prompt: 'consent' });
+    });
+  },
+
+  async refreshToken() {
+    await this.init();
+    return new Promise((resolve, reject) => {
+      this.tokenClient.callback = (resp) => {
+        if (resp.error) return reject(new Error(resp.error));
+        this.accessToken = resp.access_token;
+        this.expiresAt = Date.now() + (resp.expires_in - 60) * 1000;
+        localStorage.setItem('gdrive-token', JSON.stringify({ token: this.accessToken, expiresAt: this.expiresAt }));
+        resolve(resp.access_token);
+      };
+      this.tokenClient.requestAccessToken({ prompt: '' });
+    });
+  },
+
+  loadFromStorage() {
+    try {
+      const raw = localStorage.getItem('gdrive-token');
+      if (!raw) return false;
+      const { token, expiresAt } = JSON.parse(raw);
+      if (Date.now() > expiresAt) return false;
+      this.accessToken = token;
+      this.expiresAt = expiresAt;
+      return true;
+    } catch (e) { return false; }
+  },
+
+  signOut() {
+    if (this.accessToken && window.google?.accounts?.oauth2) {
+      try { window.google.accounts.oauth2.revoke(this.accessToken, () => {}); } catch (e) {}
+    }
+    this.accessToken = null;
+    this.expiresAt = 0;
+    localStorage.removeItem('gdrive-token');
+    localStorage.removeItem('gdrive-fileid');
+    localStorage.removeItem('gdrive-lastsync');
+  },
+
+  async getValidToken() {
+    if (this.accessToken && Date.now() < this.expiresAt) return this.accessToken;
+    if (this.loadFromStorage() && Date.now() < this.expiresAt) return this.accessToken;
+    return await this.refreshToken();
+  }
+};
+
+const DriveAPI = {
+  async findFile() {
+    const cached = localStorage.getItem('gdrive-fileid');
+    if (cached) return cached;
+    const token = await GoogleAuth.getValidToken();
+    const url = `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name='${DRIVE_FILE_NAME}'&fields=files(id,name,modifiedTime)`;
+    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` }});
+    if (!res.ok) throw new Error('No se pudo listar archivos en Drive');
+    const data = await res.json();
+    if (data.files && data.files.length > 0) {
+      localStorage.setItem('gdrive-fileid', data.files[0].id);
+      return data.files[0].id;
+    }
+    return null;
+  },
+
+  async createFile(content) {
+    const token = await GoogleAuth.getValidToken();
+    const metadata = { name: DRIVE_FILE_NAME, parents: ['appDataFolder'], mimeType: 'application/json' };
+    const boundary = '-------cerebro' + Math.random().toString(36).slice(2);
+    const body =
+      `--${boundary}\r\n` +
+      `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+      JSON.stringify(metadata) + `\r\n` +
+      `--${boundary}\r\n` +
+      `Content-Type: application/json\r\n\r\n` +
+      content + `\r\n` +
+      `--${boundary}--`;
+    const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': `multipart/related; boundary=${boundary}` },
+      body
+    });
+    if (!res.ok) throw new Error('No se pudo crear el archivo en Drive');
+    const data = await res.json();
+    localStorage.setItem('gdrive-fileid', data.id);
+    return data;
+  },
+
+  async updateFile(fileId, content) {
+    const token = await GoogleAuth.getValidToken();
+    const res = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media&fields=id,modifiedTime`, {
+      method: 'PATCH',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: content
+    });
+    if (!res.ok) throw new Error('No se pudo actualizar el archivo');
+    return await res.json();
+  },
+
+  async downloadFile(fileId) {
+    const token = await GoogleAuth.getValidToken();
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!res.ok) throw new Error('No se pudo descargar el archivo');
+    return await res.text();
+  }
+};
+
+// Fusión inteligente: por nota individual gana la más reciente
+function mergeData(local, remote) {
+  const localNotes = local.notes || [];
+  const remoteNotes = remote.notes || [];
+  const localNotebooks = local.notebooks || [];
+  const remoteNotebooks = remote.notebooks || [];
+
+  const noteMap = new Map();
+  for (const n of localNotes) noteMap.set(n.id, n);
+  for (const r of remoteNotes) {
+    const ex = noteMap.get(r.id);
+    if (!ex || (r.updatedAt || 0) > (ex.updatedAt || 0)) noteMap.set(r.id, r);
+  }
+  // detectar borrados: si una nota está en local con _deleted=true y timestamp posterior al remoto -> queda borrada
+  const mergedNotes = Array.from(noteMap.values()).filter(n => !n._deleted);
+
+  const nbMap = new Map();
+  for (const nb of localNotebooks) nbMap.set(nb.id, nb);
+  for (const r of remoteNotebooks) {
+    const ex = nbMap.get(r.id);
+    if (!ex || (r.createdAt || 0) > (ex.createdAt || 0)) nbMap.set(r.id, r);
+  }
+  return { notes: mergedNotes, notebooks: Array.from(nbMap.values()) };
+}
 
 // ====================================================================
 // PALETA DE COLORES PARA NOTAS
@@ -154,6 +335,14 @@ export default function CerebroDigital() {
   const [notes, setNotes] = useState([]);
   const [notebooks, setNotebooks] = useState([]);
   const [viewMode, setViewMode] = useState('grid'); // grid | list | cards
+  // === Sincronización con Google Drive ===
+  const [driveConnected, setDriveConnected] = useState(false);
+  const [syncStatus, setSyncStatus] = useState('idle'); // idle | syncing | synced | error | offline
+  const [syncError, setSyncError] = useState(null);
+  const [lastSync, setLastSync] = useState(null);
+  const syncTimerRef = useRef(null);
+  const isSyncingRef = useRef(false);
+  const skipNextSaveRef = useRef(false); // para evitar re-sync inmediato cuando los datos vienen del servidor
   const [view, setView] = useState('grid');
   const [activeNote, setActiveNote] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -188,6 +377,138 @@ export default function CerebroDigital() {
   useEffect(() => { if (loaded) Storage.set('brain-notes', JSON.stringify(notes)); }, [notes, loaded]);
   useEffect(() => { if (loaded) Storage.set('brain-notebooks', JSON.stringify(notebooks)); }, [notebooks, loaded]);
   useEffect(() => { if (loaded) Storage.set('brain-viewmode', viewMode); }, [viewMode, loaded]);
+
+  // === SINCRONIZACIÓN: detectar conexión previa al cargar ===
+  useEffect(() => {
+    if (!loaded || !unlocked) return;
+    const wasConnected = localStorage.getItem('gdrive-connected') === '1';
+    if (wasConnected) {
+      (async () => {
+        try {
+          await GoogleAuth.init();
+          if (GoogleAuth.loadFromStorage()) {
+            setDriveConnected(true);
+            // sincronizar inmediatamente al abrir la app
+            await performSync('initial');
+          } else {
+            // intentar refrescar el token silenciosamente
+            try {
+              await GoogleAuth.refreshToken();
+              setDriveConnected(true);
+              await performSync('initial');
+            } catch (e) {
+              setDriveConnected(false);
+              localStorage.removeItem('gdrive-connected');
+            }
+          }
+        } catch (e) {
+          console.error('Error inicializando Drive:', e);
+        }
+      })();
+    }
+    // detectar online/offline
+    const onOnline = () => { if (driveConnected) performSync('reconnect'); };
+    const onOffline = () => setSyncStatus('offline');
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    if (!navigator.onLine) setSyncStatus('offline');
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, [loaded, unlocked]);
+
+  // === SINCRONIZACIÓN: programar sync cuando cambian los datos ===
+  useEffect(() => {
+    if (!loaded || !driveConnected) return;
+    if (skipNextSaveRef.current) { skipNextSaveRef.current = false; return; }
+    clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = setTimeout(() => { performSync('auto'); }, 4000);
+    return () => clearTimeout(syncTimerRef.current);
+  }, [notes, notebooks, driveConnected, loaded]);
+
+  // Función central de sincronización
+  const performSync = async (reason = 'manual') => {
+    if (isSyncingRef.current) return;
+    if (!navigator.onLine) { setSyncStatus('offline'); return; }
+    isSyncingRef.current = true;
+    setSyncStatus('syncing');
+    setSyncError(null);
+    try {
+      const localData = { notes, notebooks, syncedAt: Date.now() };
+      let fileId = await DriveAPI.findFile();
+      if (!fileId) {
+        // primera vez: subir lo local
+        const created = await DriveAPI.createFile(JSON.stringify(localData));
+        fileId = created.id;
+      } else {
+        // descargar y fusionar
+        const remoteRaw = await DriveAPI.downloadFile(fileId);
+        let remoteData;
+        try { remoteData = JSON.parse(remoteRaw); } catch (e) { remoteData = { notes: [], notebooks: [] }; }
+        const merged = mergeData(localData, remoteData);
+        // actualizar estado local con la fusión
+        skipNextSaveRef.current = true;
+        setNotes(merged.notes);
+        setNotebooks(merged.notebooks);
+        // subir el resultado
+        await DriveAPI.updateFile(fileId, JSON.stringify({ ...merged, syncedAt: Date.now() }));
+      }
+      const now = Date.now();
+      setLastSync(now);
+      localStorage.setItem('gdrive-lastsync', String(now));
+      setSyncStatus('synced');
+      // volver a idle después de un rato
+      setTimeout(() => setSyncStatus(s => s === 'synced' ? 'idle' : s), 3000);
+    } catch (e) {
+      console.error('Error en sincronización:', e);
+      setSyncError(e.message || 'Error desconocido');
+      setSyncStatus('error');
+      // Si el token expiró, intentar reconectar
+      if (e.message?.includes('401') || e.message?.includes('token')) {
+        try {
+          await GoogleAuth.refreshToken();
+          isSyncingRef.current = false;
+          return performSync(reason);
+        } catch (er) {
+          setDriveConnected(false);
+          localStorage.removeItem('gdrive-connected');
+        }
+      }
+    } finally {
+      isSyncingRef.current = false;
+    }
+  };
+
+  // Cargar último sync al inicio
+  useEffect(() => {
+    if (!loaded) return;
+    const ls = localStorage.getItem('gdrive-lastsync');
+    if (ls) setLastSync(parseInt(ls));
+  }, [loaded]);
+
+  // Conectar/desconectar Drive
+  const connectDrive = async () => {
+    try {
+      setSyncStatus('syncing');
+      await GoogleAuth.signIn();
+      setDriveConnected(true);
+      localStorage.setItem('gdrive-connected', '1');
+      await performSync('connect');
+    } catch (e) {
+      console.error('Error conectando Drive:', e);
+      setSyncError(e.message);
+      setSyncStatus('error');
+    }
+  };
+  const disconnectDrive = () => {
+    GoogleAuth.signOut();
+    setDriveConnected(false);
+    setSyncStatus('idle');
+    setLastSync(null);
+    localStorage.removeItem('gdrive-connected');
+  };
+  const manualSync = () => performSync('manual');
 
   // Share target / atajos
   useEffect(() => {
@@ -359,6 +680,9 @@ export default function CerebroDigital() {
           hasSecurity={!!securityConfig}
           onUpdate={updateNote}
           onDelete={deleteNote}
+          driveConnected={driveConnected}
+          syncStatus={syncStatus}
+          onManualSync={manualSync}
         />
       )}
       {view === 'notebooks' && <NotebooksView notebooks={notebooks} notes={notes} onBack={() => setView('grid')} onSelect={(id) => { setActiveNotebook(id); setView('grid'); }} onCreate={createNotebook} onRename={renameNotebook} onRecolor={recolorNotebook} onDelete={deleteNotebook} />}
@@ -366,7 +690,7 @@ export default function CerebroDigital() {
       {view === 'chat' && <ChatView notes={notes} searchIndex={searchIndex} onBack={() => setView('grid')} onOpen={(n) => { setActiveNote(n); setView('detail'); }} />}
       {view === 'detail' && activeNote && <DetailView note={activeNote} allNotes={notes} notebooks={notebooks} searchIndex={searchIndex} onBack={() => { setView('grid'); setActiveNote(null); }} onUpdate={updateNote} onDelete={deleteNote} onOpenNote={(id) => { const n = notes.find(x => x.id === id); if (n) setActiveNote(n); }} encryptNote={encryptNote} decryptNoteBlocks={decryptNoteBlocks} removeEncryption={removeEncryption} onExportNote={(n) => setShowExport(n)} allTags={allTags} />}
       {view === 'graph' && <GraphView notes={notes} onBack={() => setView('grid')} onOpen={(n) => { setActiveNote(n); setView('detail'); }} />}
-      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} securityConfig={securityConfig} setSecurityConfig={setSecurityConfig} />}
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} securityConfig={securityConfig} setSecurityConfig={setSecurityConfig} driveConnected={driveConnected} syncStatus={syncStatus} syncError={syncError} lastSync={lastSync} onConnectDrive={connectDrive} onDisconnectDrive={disconnectDrive} onManualSync={manualSync} />}
       {showExport && <ExportModal note={showExport} onClose={() => setShowExport(null)} />}
     </div>
   );
@@ -397,7 +721,7 @@ function LockScreen({ securityConfig, onUnlock, onReset }) {
 }
 
 // ============== SETTINGS (sin cambios funcionales) ==============
-function SettingsModal({ onClose, securityConfig, setSecurityConfig }) {
+function SettingsModal({ onClose, securityConfig, setSecurityConfig, driveConnected, syncStatus, syncError, lastSync, onConnectDrive, onDisconnectDrive, onManualSync }) {
   const [step, setStep] = useState('main'); const [pin1, setPin1] = useState(''); const [pin2, setPin2] = useState(''); const [error, setError] = useState(''); const [info, setInfo] = useState(''); const pinLength = 6;
   const setupPin = async () => { if (pin1.length !== pinLength) return; if (pin1 !== pin2) { setError('Los PIN no coinciden'); setPin1(''); setPin2(''); setStep('set-pin-1'); setTimeout(() => setError(''), 3000); return; } const s = crypto.getRandomValues(new Uint8Array(16)); const h = await hashPin(pin1, s); const c = { ...(securityConfig || {}), pinSalt: bufToB64(s), pinHash: h, pinLength }; await Storage.set('security-config', JSON.stringify(c)); setSecurityConfig(c); setInfo('PIN configurado'); setStep('main'); setPin1(''); setPin2(''); };
   const setupBiometric = async () => { if (!window.PublicKeyCredential) { alert('Tu dispositivo no soporta biometría'); return; } try { const c = crypto.getRandomValues(new Uint8Array(32)); const u = crypto.getRandomValues(new Uint8Array(16)); const cr = await navigator.credentials.create({ publicKey: { challenge: c, rp: { name: 'Cerebro' }, user: { id: u, name: 'cerebro-user', displayName: 'Cerebro' }, pubKeyCredParams: [{alg:-7,type:'public-key'},{alg:-257,type:'public-key'}], authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred' }, timeout: 60000, attestation: 'none' } }); const id = bufToB64(cr.rawId); const cfg = { ...securityConfig, biometricEnabled: true, biometricCredId: id }; await Storage.set('security-config', JSON.stringify(cfg)); setSecurityConfig(cfg); setInfo('Huella registrada'); } catch (e) { alert('No se pudo registrar la huella.'); } };
@@ -416,6 +740,43 @@ function SettingsModal({ onClose, securityConfig, setSecurityConfig }) {
           {error && <div className="mb-4 p-3 bg-rose-50 text-rose-800 rounded-xl text-sm">{error}</div>}
           {step === 'main' && (
             <div className="space-y-3">
+              {/* === SINCRONIZACIÓN CON GOOGLE DRIVE === */}
+              <div className="bg-gradient-to-br from-blue-50 to-emerald-50 rounded-2xl p-4 border border-blue-100">
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-white text-blue-600 flex items-center justify-center flex-shrink-0">
+                    {driveConnected ? <Cloud size={18} className="text-emerald-600" /> : <CloudOff size={18} className="text-stone-400" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="font-semibold text-sm">Sincronización con Google Drive</h3>
+                    <p className="text-xs text-stone-600 mt-0.5">
+                      {driveConnected ? (
+                        syncStatus === 'syncing' ? 'Sincronizando…' :
+                        syncStatus === 'error' ? `Error: ${syncError || 'desconocido'}` :
+                        syncStatus === 'offline' ? 'Sin conexión · se sincronizará al volver' :
+                        lastSync ? `Última sincronización: ${formatRelativeTime(lastSync)}` :
+                        'Conectado · sin sincronizaciones aún'
+                      ) : 'Tus notas solo están en este dispositivo'}
+                    </p>
+                    <div className="flex gap-2 mt-3 flex-wrap">
+                      {driveConnected ? (
+                        <>
+                          <button onClick={onManualSync} disabled={syncStatus === 'syncing'} className="text-xs px-3 py-1.5 bg-stone-900 text-white rounded-lg font-medium disabled:opacity-50 flex items-center gap-1">
+                            <RefreshCw size={11} className={syncStatus === 'syncing' ? 'animate-spin' : ''} /> Sincronizar ahora
+                          </button>
+                          <button onClick={() => { if (confirm('¿Desconectar Drive? Las notas locales se mantienen.')) onDisconnectDrive(); }} className="text-xs px-3 py-1.5 border border-stone-300 rounded-lg flex items-center gap-1">
+                            <LogOut size={11} /> Desconectar
+                          </button>
+                        </>
+                      ) : (
+                        <button onClick={onConnectDrive} disabled={syncStatus === 'syncing'} className="text-xs px-3 py-1.5 bg-stone-900 text-white rounded-lg font-medium disabled:opacity-50 flex items-center gap-1.5">
+                          <Cloud size={12} /> Conectar con Google Drive
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <div className="bg-stone-50 rounded-2xl p-4"><div className="flex items-start gap-3"><div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center"><KeyRound size={18} /></div><div className="flex-1"><h3 className="font-semibold text-sm">PIN</h3><p className="text-xs text-stone-500">{securityConfig?.pinHash ? 'Configurado' : 'Sin configurar'}</p><div className="flex gap-2 mt-3"><button onClick={() => setStep('set-pin-1')} className="text-xs px-3 py-1.5 bg-stone-900 text-white rounded-lg font-medium">{securityConfig?.pinHash ? 'Cambiar' : 'Configurar'}</button>{securityConfig?.pinHash && <button onClick={removeAll} className="text-xs px-3 py-1.5 border border-stone-300 rounded-lg">Quitar</button>}</div></div></div></div>
               <div className={`bg-stone-50 rounded-2xl p-4 ${!securityConfig?.pinHash?'opacity-50 pointer-events-none':''}`}><div className="flex items-start gap-3"><div className="w-10 h-10 rounded-xl bg-purple-100 text-purple-600 flex items-center justify-center"><Fingerprint size={18} /></div><div className="flex-1"><h3 className="font-semibold text-sm">Huella</h3><p className="text-xs text-stone-500">{!securityConfig?.pinHash?'Configura PIN primero':securityConfig?.biometricEnabled?'Activada':'Desactivada'}</p><div className="flex gap-2 mt-3">{securityConfig?.biometricEnabled?<button onClick={disableBio} className="text-xs px-3 py-1.5 border border-stone-300 rounded-lg">Desactivar</button>:<button onClick={setupBiometric} className="text-xs px-3 py-1.5 bg-stone-900 text-white rounded-lg font-medium">Activar</button>}</div></div></div></div>
             </div>
@@ -426,6 +787,20 @@ function SettingsModal({ onClose, securityConfig, setSecurityConfig }) {
       </div>
     </div>
   );
+}
+
+function formatRelativeTime(ts) {
+  if (!ts) return 'nunca';
+  const diff = Date.now() - ts;
+  const sec = Math.floor(diff / 1000);
+  if (sec < 30) return 'ahora';
+  if (sec < 60) return `hace ${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `hace ${min} ${min === 1 ? 'minuto' : 'minutos'}`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `hace ${hr} ${hr === 1 ? 'hora' : 'horas'}`;
+  const d = Math.floor(hr / 24);
+  return `hace ${d} ${d === 1 ? 'día' : 'días'}`;
 }
 
 function migrateNote(n) {
@@ -443,8 +818,25 @@ function migrateNote(n) {
 }
 const newBlockId = () => Date.now() + '-' + Math.random().toString(36).slice(2, 8);
 
+// ============== INDICADOR DE SINCRONIZACIÓN ==============
+function SyncBadge({ status, onClick }) {
+  const config = {
+    idle:    { Icon: Cloud,         color: 'text-emerald-600 bg-emerald-50 border-emerald-200', spin: false, title: 'Sincronizado · toca para sincronizar ahora' },
+    syncing: { Icon: RefreshCw,     color: 'text-blue-600 bg-blue-50 border-blue-200',          spin: true,  title: 'Sincronizando…' },
+    synced:  { Icon: CheckCircle2,  color: 'text-emerald-600 bg-emerald-50 border-emerald-200', spin: false, title: 'Cambios guardados en Drive' },
+    error:   { Icon: AlertCircle,   color: 'text-rose-600 bg-rose-50 border-rose-200',          spin: false, title: 'Error al sincronizar · toca para reintentar' },
+    offline: { Icon: CloudOff,      color: 'text-stone-500 bg-stone-100 border-stone-200',      spin: false, title: 'Sin conexión' }
+  }[status] || { Icon: Cloud, color: 'text-stone-500 bg-stone-100 border-stone-200', spin: false, title: '' };
+  const { Icon, color, spin, title } = config;
+  return (
+    <button onClick={onClick} title={title} className={`w-10 h-10 rounded-full border flex items-center justify-center active:scale-95 transition ${color}`}>
+      <Icon size={15} className={spin ? 'animate-spin' : ''} />
+    </button>
+  );
+}
+
 // ============== GRID VIEW ==============
-function GridView({ notes, allNotes, notebooks, searchQuery, setSearchQuery, activeTag, setActiveTag, activeNotebook, setActiveNotebook, allTags, showTagFilter, setShowTagFilter, advancedFilters, setAdvancedFilters, showAdvancedSearch, setShowAdvancedSearch, viewMode, setViewMode, onOpen, onCreate, onGraph, onTasks, onChat, onExport, onSettings, onNotebooks, hasSecurity, onUpdate, onDelete }) {
+function GridView({ notes, allNotes, notebooks, searchQuery, setSearchQuery, activeTag, setActiveTag, activeNotebook, setActiveNotebook, allTags, showTagFilter, setShowTagFilter, advancedFilters, setAdvancedFilters, showAdvancedSearch, setShowAdvancedSearch, viewMode, setViewMode, onOpen, onCreate, onGraph, onTasks, onChat, onExport, onSettings, onNotebooks, hasSecurity, onUpdate, onDelete, driveConnected, syncStatus, onManualSync }) {
   const [showMenu, setShowMenu] = useState(false);
   const starred = notes.filter(n => n.starred);
   const currentNotebook = activeNotebook && activeNotebook !== 'inbox' ? notebooks.find(n => n.id === activeNotebook) : null;
@@ -468,6 +860,7 @@ function GridView({ notes, allNotes, notebooks, searchQuery, setSearchQuery, act
               )}
             </div>
             <div className="flex items-center gap-2">
+              {driveConnected && <SyncBadge status={syncStatus} onClick={onManualSync} />}
               <button onClick={onChat} className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-400 to-orange-500 text-white flex items-center justify-center active:scale-95 transition" title="Pregúntale a tu cerebro"><Sparkles size={16} /></button>
               <button onClick={onGraph} className="w-10 h-10 rounded-full bg-stone-900 text-stone-50 flex items-center justify-center active:scale-95 transition"><Network size={18} /></button>
               <button onClick={() => setShowMenu(!showMenu)} className="w-10 h-10 rounded-full border border-stone-300 flex items-center justify-center active:scale-95 transition"><MoreVertical size={18} /></button>
