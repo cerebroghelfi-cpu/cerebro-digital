@@ -1651,7 +1651,7 @@ function DetailView({ note, allNotes, notebooks, searchIndex, onBack, onUpdate, 
     setShowAddBlock(false);
   };
   const updateBlock = (id, updates) => {
-    // Caso especial: si vienen múltiples imágenes adicionales, creamos bloques nuevos detrás
+    // Caso especial 1: múltiples imágenes adicionales (selección múltiple)
     if (updates._additionalImages && Array.isArray(updates._additionalImages)) {
       const { _additionalImages, ...cleanUpdates } = updates;
       const idx = visibleBlocks.findIndex(b => b.id === id);
@@ -1666,6 +1666,22 @@ function DetailView({ note, allNotes, notebooks, searchIndex, onBack, onUpdate, 
         ...visibleBlocks.slice(0, idx),
         updatedSelf,
         ...newImageBlocks,
+        ...visibleBlocks.slice(idx + 1)
+      ];
+      updateBlocks(next);
+      return;
+    }
+    // Caso especial 2: un bloque adicional (ej: transcripción de voz)
+    if (updates._appendBlock) {
+      const { _appendBlock, ...cleanUpdates } = updates;
+      const idx = visibleBlocks.findIndex(b => b.id === id);
+      if (idx === -1) return;
+      const updatedSelf = { ...visibleBlocks[idx], ...cleanUpdates };
+      const newBlock = { id: newBlockId(), ..._appendBlock };
+      const next = [
+        ...visibleBlocks.slice(0, idx),
+        updatedSelf,
+        newBlock,
         ...visibleBlocks.slice(idx + 1)
       ];
       updateBlocks(next);
@@ -2675,45 +2691,403 @@ function DrawingBlock({ block, onUpdate }) {
 }
 
 function VoiceBlock({ block, onUpdate }) {
-  const [recording, setRecording] = useState(false); const [time, setTime] = useState(0); const [playing, setPlaying] = useState(false);
-  const mrRef = useRef(); const chunksRef = useRef([]); const audioRef = useRef(); const timerRef = useRef();
-  const startRec = async () => { try { const s = await navigator.mediaDevices.getUserMedia({audio:true}); const mr = new MediaRecorder(s); chunksRef.current = []; mr.ondataavailable = e => chunksRef.current.push(e.data); mr.onstop = () => { const b = new Blob(chunksRef.current, {type:'audio/webm'}); const r = new FileReader(); r.onload = () => { const m = Math.floor(time/60); const sec = time%60; onUpdate({ audioData: r.result, duration: `${m}:${sec.toString().padStart(2,'0')}` }); }; r.readAsDataURL(b); s.getTracks().forEach(t => t.stop()); }; mrRef.current = mr; mr.start(); setRecording(true); setTime(0); timerRef.current = setInterval(() => setTime(t=>t+1), 1000); } catch (e) { alert('No se pudo acceder al micrófono.'); }};
-  const stopRec = () => { mrRef.current?.stop(); setRecording(false); clearInterval(timerRef.current); };
+  const [recording, setRecording] = useState(false);
+  const [time, setTime] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [liveTranscript, setLiveTranscript] = useState('');
+  const [transcriptError, setTranscriptError] = useState(false);
+
+  const mrRef = useRef();
+  const chunksRef = useRef([]);
+  const audioRef = useRef();
+  const timerRef = useRef();
+  const recognitionRef = useRef();
+  const transcriptRef = useRef('');
+  const wasTranscribingRef = useRef(false);
+
+  // Verifica si el navegador soporta reconocimiento de voz
+  const speechSupported = typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition);
+
   const fmt = (s) => `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`;
-  if (block.audioData) return (
-    <div className="my-2 py-2 px-3 bg-rose-50/50 rounded-lg flex items-center gap-3">
-      <audio ref={audioRef} src={block.audioData} onEnded={() => setPlaying(false)} className="hidden"/>
-      <button onClick={() => { if (playing) { audioRef.current.pause(); setPlaying(false); } else { audioRef.current.play(); setPlaying(true); }}} className="w-10 h-10 rounded-full bg-rose-500 text-white flex items-center justify-center flex-shrink-0">{playing?<Pause size={16}/>:<Play size={16} className="ml-0.5"/>}</button>
-      <div className="flex-1"><p className="text-sm font-medium">Nota de voz</p><p className="text-xs text-stone-500">{block.duration||'0:00'}</p></div>
-      <button onClick={() => onUpdate({ audioData: null, duration: null })} className="text-xs text-rose-600 underline">Regrabar</button>
-    </div>
-  );
+
+  // Inicia reconocimiento de voz en paralelo a la grabación
+  const startSpeechRecognition = () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { setTranscriptError(true); return; }
+    try {
+      const rec = new SR();
+      rec.lang = 'es-AR';
+      rec.continuous = true;
+      rec.interimResults = true;
+      let finalTranscript = '';
+      rec.onresult = (event) => {
+        let interim = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript + ' ';
+          } else {
+            interim += transcript;
+          }
+        }
+        transcriptRef.current = finalTranscript;
+        setLiveTranscript(finalTranscript + interim);
+      };
+      rec.onerror = (e) => {
+        // Si hay error de "no-speech" o "aborted" después de iniciar, reintentar
+        if (e.error === 'no-speech' || e.error === 'aborted') return;
+        console.warn('Error de reconocimiento:', e.error);
+        setTranscriptError(true);
+      };
+      rec.onend = () => {
+        // Si seguimos grabando, reiniciar para superar el límite de 60s
+        if (wasTranscribingRef.current && recording) {
+          try { rec.start(); } catch (e) {}
+        }
+      };
+      recognitionRef.current = rec;
+      rec.start();
+    } catch (e) {
+      setTranscriptError(true);
+    }
+  };
+
+  const stopSpeechRecognition = () => {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.onend = null; // evitar reinicio
+        recognitionRef.current.stop();
+      } catch (e) {}
+      recognitionRef.current = null;
+    }
+  };
+
+  // Iniciar grabación. El parámetro decide si además se transcribe.
+  const startRec = async (withTranscript) => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      chunksRef.current = [];
+      transcriptRef.current = '';
+      setLiveTranscript('');
+      setTranscriptError(false);
+      wasTranscribingRef.current = !!withTranscript;
+
+      mr.ondataavailable = e => chunksRef.current.push(e.data);
+      mr.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+        const reader = new FileReader();
+        reader.onload = () => {
+          const m = Math.floor(time / 60);
+          const sec = time % 60;
+          const duration = `${m}:${sec.toString().padStart(2, '0')}`;
+          const finalTranscript = (transcriptRef.current || '').trim();
+          // Si había transcripción, la enviamos como bloque adicional
+          if (wasTranscribingRef.current && finalTranscript) {
+            onUpdate({
+              audioData: reader.result,
+              duration,
+              _appendBlock: { type: 'text', content: plainToRich(finalTranscript) }
+            });
+          } else {
+            onUpdate({ audioData: reader.result, duration });
+          }
+        };
+        reader.readAsDataURL(blob);
+        stream.getTracks().forEach(t => t.stop());
+      };
+
+      mrRef.current = mr;
+      mr.start();
+      setRecording(true);
+      setTime(0);
+      timerRef.current = setInterval(() => setTime(t => t + 1), 1000);
+
+      if (withTranscript) {
+        setTranscribing(true);
+        startSpeechRecognition();
+      }
+    } catch (e) {
+      alert('No se pudo acceder al micrófono.');
+    }
+  };
+
+  const stopRec = () => {
+    mrRef.current?.stop();
+    setRecording(false);
+    setTranscribing(false);
+    wasTranscribingRef.current = false;
+    clearInterval(timerRef.current);
+    stopSpeechRecognition();
+  };
+
+  // Vista cuando ya hay audio grabado
+  if (block.audioData) {
+    return (
+      <div className="my-2 py-2 px-3 bg-rose-50/50 rounded-lg flex items-center gap-3">
+        <audio ref={audioRef} src={block.audioData} onEnded={() => setPlaying(false)} className="hidden" />
+        <button
+          onClick={() => {
+            if (playing) { audioRef.current.pause(); setPlaying(false); }
+            else { audioRef.current.play(); setPlaying(true); }
+          }}
+          className="w-10 h-10 rounded-full bg-rose-500 text-white flex items-center justify-center flex-shrink-0"
+        >
+          {playing ? <Pause size={16} /> : <Play size={16} className="ml-0.5" />}
+        </button>
+        <div className="flex-1">
+          <p className="text-sm font-medium">Nota de voz</p>
+          <p className="text-xs text-stone-500">{block.duration || '0:00'}</p>
+        </div>
+        <button onClick={() => onUpdate({ audioData: null, duration: null })} className="text-xs text-rose-600 underline">
+          Regrabar
+        </button>
+      </div>
+    );
+  }
+
+  // Vista de grabación activa
+  if (recording) {
+    return (
+      <div className="my-2 py-5 text-center bg-stone-50/50 rounded-lg">
+        <button onClick={stopRec} className="w-14 h-14 mx-auto rounded-full flex items-center justify-center transition bg-rose-500 pulse-ring text-white">
+          <Square size={20} fill="white" />
+        </button>
+        <p className="mt-2 text-lg font-mono font-semibold">{fmt(time)}</p>
+        <p className="text-xs text-stone-500 mt-0.5">
+          {transcribing ? (transcriptError ? '⚠️ Transcripción no disponible' : '🎙️ Grabando y transcribiendo…') : '🎤 Grabando…'}
+        </p>
+        {transcribing && liveTranscript && (
+          <div className="mx-4 mt-3 p-2.5 bg-white border border-stone-200 rounded-md text-left">
+            <p className="text-[10px] text-stone-400 uppercase tracking-wider mb-1">Transcripción en vivo</p>
+            <p className="text-xs text-stone-700 leading-relaxed">{liveTranscript}</p>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Vista inicial: dos opciones de grabación
   return (
-    <div className="my-2 py-6 text-center bg-stone-50/50 rounded-lg">
-      <button onClick={recording?stopRec:startRec} className={`w-14 h-14 mx-auto rounded-full flex items-center justify-center transition ${recording?'bg-rose-500 pulse-ring':'bg-stone-900'} text-white`}>{recording?<Square size={20} fill="white"/>:<Mic size={20}/>}</button>
-      <p className="mt-2 text-lg font-mono font-semibold">{fmt(time)}</p>
-      <p className="text-xs text-stone-500 mt-0.5">{recording?'Grabando…':'Toca para grabar'}</p>
+    <div className="my-2 py-5 px-4 text-center bg-stone-50/50 rounded-lg">
+      <p className="text-xs text-stone-500 mb-3">¿Cómo querés grabar?</p>
+      <div className="flex gap-3 justify-center flex-wrap">
+        <button onClick={() => startRec(false)} className="flex flex-col items-center gap-1.5 px-4 py-3 bg-stone-900 hover:bg-stone-800 text-white rounded-xl active:scale-95 transition min-w-[120px]">
+          <Mic size={20} />
+          <span className="text-xs font-medium">Solo audio</span>
+        </button>
+        <button
+          onClick={() => startRec(true)}
+          disabled={!speechSupported}
+          className="flex flex-col items-center gap-1.5 px-4 py-3 bg-gradient-to-br from-amber-500 to-rose-500 hover:from-amber-600 hover:to-rose-600 text-white rounded-xl active:scale-95 transition disabled:opacity-40 disabled:cursor-not-allowed min-w-[120px]"
+          title={!speechSupported ? 'Tu navegador no soporta transcripción' : 'Graba y transcribe a texto'}
+        >
+          <div className="relative">
+            <Mic size={20} />
+            <Sparkles size={10} className="absolute -top-1 -right-1.5" />
+          </div>
+          <span className="text-xs font-medium">Audio + texto</span>
+        </button>
+      </div>
+      {!speechSupported && (
+        <p className="text-[10px] text-stone-400 mt-3">La transcripción solo funciona en Chrome y Edge</p>
+      )}
     </div>
   );
 }
 
+// Helper: detectar tipo de link y extraer datos
+function detectLinkType(url) {
+  if (!url) return { type: 'generic' };
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, '');
+
+    // YouTube
+    if (host === 'youtube.com' || host === 'm.youtube.com') {
+      const videoId = u.searchParams.get('v');
+      if (videoId) return { type: 'youtube', videoId, host };
+    }
+    if (host === 'youtu.be') {
+      const videoId = u.pathname.slice(1).split('/')[0].split('?')[0];
+      if (videoId) return { type: 'youtube', videoId, host: 'youtube.com' };
+    }
+
+    // Twitter / X
+    if (host === 'twitter.com' || host === 'x.com') {
+      const parts = u.pathname.split('/').filter(Boolean);
+      if (parts.length >= 3 && parts[1] === 'status') {
+        return { type: 'twitter', user: parts[0], tweetId: parts[2], host };
+      }
+      return { type: 'twitter', host };
+    }
+
+    // Spotify
+    if (host === 'open.spotify.com' || host === 'spotify.com') {
+      const parts = u.pathname.split('/').filter(Boolean);
+      if (parts.length >= 2) {
+        return { type: 'spotify', kind: parts[0], id: parts[1], host };
+      }
+      return { type: 'spotify', host };
+    }
+
+    // Instagram
+    if (host === 'instagram.com') {
+      return { type: 'instagram', host };
+    }
+
+    // Imagen directa
+    if (/\.(jpe?g|png|gif|webp|svg)(\?|$)/i.test(u.pathname)) {
+      return { type: 'image-direct', host };
+    }
+
+    return { type: 'generic', host };
+  } catch (e) {
+    return { type: 'generic' };
+  }
+}
+
 function LinkBlock({ block, onUpdate }) {
-  const [url, setUrl] = useState(block.url || ''); const [content, setContent] = useState(block.content || ''); const [editing, setEditing] = useState(!block.url);
+  const [url, setUrl] = useState(block.url || '');
+  const [content, setContent] = useState(block.content || '');
+  const [editing, setEditing] = useState(!block.url);
   const handleSave = () => { onUpdate({ url, content }); setEditing(false); };
-  if (!editing && block.url) return (
-    <div className="my-2 py-2.5 px-3 bg-amber-50/60 rounded-lg flex items-start gap-3">
-      <div className="w-8 h-8 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center flex-shrink-0"><Link2 size={15}/></div>
-      <div className="flex-1 min-w-0">
-        <a href={block.url} target="_blank" rel="noreferrer" className="text-sm text-amber-800 break-all underline">{block.url}</a>
-        {block.content && <p className="text-xs text-stone-600 mt-1">{block.content}</p>}
-        <button onClick={() => setEditing(true)} className="text-xs text-stone-500 underline mt-1">Editar</button>
-      </div>
-    </div>
-  );
+
+  if (!editing && block.url) {
+    const info = detectLinkType(block.url);
+
+    // YouTube: thumbnail grande clickeable
+    if (info.type === 'youtube') {
+      const thumbnail = `https://img.youtube.com/vi/${info.videoId}/hqdefault.jpg`;
+      return (
+        <div className="my-3 rounded-xl overflow-hidden border border-stone-200 hover:border-stone-400 transition group">
+          <a href={block.url} target="_blank" rel="noreferrer" className="block relative">
+            <img src={thumbnail} alt="" className="w-full aspect-video object-cover bg-stone-100" />
+            {/* Botón Play centrado */}
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="w-16 h-16 rounded-full bg-red-600 group-hover:bg-red-700 flex items-center justify-center shadow-xl transition">
+                <Play size={26} className="text-white ml-1" fill="white" />
+              </div>
+            </div>
+            {/* Badge YouTube */}
+            <div className="absolute top-2 left-2 bg-black/80 text-white text-[10px] px-2 py-1 rounded font-medium flex items-center gap-1">
+              <span style={{ fontFamily: 'sans-serif' }}>▶</span> YouTube
+            </div>
+          </a>
+          <div className="px-3 py-2 bg-stone-50">
+            <p className="text-xs text-stone-600 truncate">{block.url}</p>
+            {block.content && <p className="text-xs text-stone-700 mt-1">{block.content}</p>}
+            <button onClick={() => setEditing(true)} className="text-[10px] text-stone-400 hover:text-stone-700 underline mt-1">Editar</button>
+          </div>
+        </div>
+      );
+    }
+
+    // Twitter / X
+    if (info.type === 'twitter') {
+      return (
+        <a href={block.url} target="_blank" rel="noreferrer" className="block my-3 rounded-xl overflow-hidden border border-stone-200 hover:border-stone-900 transition bg-white">
+          <div className="px-4 py-3 flex items-start gap-3">
+            <div className="w-10 h-10 rounded-full bg-black flex items-center justify-center flex-shrink-0">
+              <span className="text-white text-lg font-bold" style={{ fontFamily: 'sans-serif' }}>𝕏</span>
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-semibold text-stone-900">X · @{info.user || 'tweet'}</p>
+              <p className="text-xs text-stone-500 truncate mt-0.5">{block.url}</p>
+              {block.content && <p className="text-sm text-stone-700 mt-2">{block.content}</p>}
+            </div>
+          </div>
+          <button onClick={(e) => { e.preventDefault(); setEditing(true); }} className="text-[10px] text-stone-400 hover:text-stone-700 underline px-4 pb-2">Editar</button>
+        </a>
+      );
+    }
+
+    // Spotify
+    if (info.type === 'spotify') {
+      const kindLabel = info.kind === 'track' ? 'Canción' : info.kind === 'album' ? 'Álbum' : info.kind === 'playlist' ? 'Playlist' : info.kind === 'artist' ? 'Artista' : 'Spotify';
+      return (
+        <a href={block.url} target="_blank" rel="noreferrer" className="block my-3 rounded-xl overflow-hidden border border-stone-200 hover:border-emerald-500 transition bg-gradient-to-br from-emerald-50 to-emerald-100/50">
+          <div className="px-4 py-3 flex items-center gap-3">
+            <div className="w-12 h-12 rounded-lg bg-emerald-500 flex items-center justify-center flex-shrink-0">
+              <Mic size={20} className="text-white" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-semibold text-emerald-900">Spotify · {kindLabel}</p>
+              <p className="text-xs text-stone-500 truncate mt-0.5">{block.url}</p>
+              {block.content && <p className="text-sm text-stone-700 mt-1">{block.content}</p>}
+            </div>
+            <div className="text-emerald-700 flex-shrink-0">
+              <Play size={20} fill="currentColor" />
+            </div>
+          </div>
+          <button onClick={(e) => { e.preventDefault(); setEditing(true); }} className="text-[10px] text-stone-400 hover:text-stone-700 underline px-4 pb-2">Editar</button>
+        </a>
+      );
+    }
+
+    // Instagram
+    if (info.type === 'instagram') {
+      return (
+        <a href={block.url} target="_blank" rel="noreferrer" className="block my-3 rounded-xl overflow-hidden border border-stone-200 hover:border-pink-500 transition bg-white">
+          <div className="px-4 py-3 flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-yellow-400 via-pink-500 to-purple-600 flex items-center justify-center flex-shrink-0">
+              <ImageIcon size={18} className="text-white" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-semibold text-stone-900">Instagram</p>
+              <p className="text-xs text-stone-500 truncate mt-0.5">{block.url}</p>
+              {block.content && <p className="text-sm text-stone-700 mt-1">{block.content}</p>}
+            </div>
+          </div>
+          <button onClick={(e) => { e.preventDefault(); setEditing(true); }} className="text-[10px] text-stone-400 hover:text-stone-700 underline px-4 pb-2">Editar</button>
+        </a>
+      );
+    }
+
+    // Imagen directa: mostrar la imagen como preview
+    if (info.type === 'image-direct') {
+      return (
+        <div className="my-3 rounded-xl overflow-hidden border border-stone-200">
+          <a href={block.url} target="_blank" rel="noreferrer">
+            <img src={block.url} alt="" className="w-full max-h-96 object-contain bg-stone-100" />
+          </a>
+          <div className="px-3 py-2 bg-stone-50">
+            <p className="text-xs text-stone-600 truncate">{block.url}</p>
+            {block.content && <p className="text-xs text-stone-700 mt-1">{block.content}</p>}
+            <button onClick={() => setEditing(true)} className="text-[10px] text-stone-400 hover:text-stone-700 underline mt-1">Editar</button>
+          </div>
+        </div>
+      );
+    }
+
+    // Genérico: favicon + dominio + url + nota
+    const faviconUrl = info.host ? `https://www.google.com/s2/favicons?domain=${info.host}&sz=64` : null;
+    return (
+      <a href={block.url} target="_blank" rel="noreferrer" className="block my-3 rounded-xl overflow-hidden border border-stone-200 hover:border-stone-400 transition bg-white">
+        <div className="px-4 py-3 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-amber-50 flex items-center justify-center flex-shrink-0 overflow-hidden">
+            {faviconUrl ? (
+              <img src={faviconUrl} alt="" className="w-7 h-7 rounded" onError={(e) => { e.target.style.display = 'none'; e.target.parentNode.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#d97706" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>'; }} />
+            ) : (
+              <Link2 size={18} className="text-amber-700" />
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            {info.host && <p className="text-[10px] font-semibold text-stone-500 uppercase tracking-wider">{info.host}</p>}
+            <p className="text-sm text-stone-800 truncate font-medium">{block.url}</p>
+            {block.content && <p className="text-xs text-stone-600 mt-1">{block.content}</p>}
+          </div>
+        </div>
+        <button onClick={(e) => { e.preventDefault(); setEditing(true); }} className="text-[10px] text-stone-400 hover:text-stone-700 underline px-4 pb-2">Editar</button>
+      </a>
+    );
+  }
+
   return (
     <div className="my-2 space-y-2">
-      <input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://..." className="w-full bg-white/50 border border-stone-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-stone-900"/>
-      <textarea value={content} onChange={e => setContent(e.target.value)} placeholder="Notas (opcional)" rows={2} className="w-full bg-white/50 border border-stone-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-stone-900 resize-none"/>
+      <input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://..." className="w-full bg-white/50 border border-stone-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-stone-900" />
+      <textarea value={content} onChange={e => setContent(e.target.value)} placeholder="Notas (opcional)" rows={2} className="w-full bg-white/50 border border-stone-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-stone-900 resize-none" />
       <button onClick={handleSave} disabled={!url.trim()} className="px-3 py-1.5 bg-stone-900 text-white rounded-lg text-xs font-medium disabled:opacity-40">Guardar enlace</button>
     </div>
   );
