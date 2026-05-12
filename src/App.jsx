@@ -1650,7 +1650,29 @@ function DetailView({ note, allNotes, notebooks, searchIndex, onBack, onUpdate, 
     updateBlocks([...visibleBlocks, nb]);
     setShowAddBlock(false);
   };
-  const updateBlock = (id, updates) => updateBlocks(visibleBlocks.map(b => b.id === id ? {...b, ...updates} : b));
+  const updateBlock = (id, updates) => {
+    // Caso especial: si vienen múltiples imágenes adicionales, creamos bloques nuevos detrás
+    if (updates._additionalImages && Array.isArray(updates._additionalImages)) {
+      const { _additionalImages, ...cleanUpdates } = updates;
+      const idx = visibleBlocks.findIndex(b => b.id === id);
+      if (idx === -1) return;
+      const updatedSelf = { ...visibleBlocks[idx], ...cleanUpdates };
+      const newImageBlocks = _additionalImages.map(data => ({
+        id: newBlockId(),
+        type: 'image',
+        imageData: data
+      }));
+      const next = [
+        ...visibleBlocks.slice(0, idx),
+        updatedSelf,
+        ...newImageBlocks,
+        ...visibleBlocks.slice(idx + 1)
+      ];
+      updateBlocks(next);
+      return;
+    }
+    updateBlocks(visibleBlocks.map(b => b.id === id ? {...b, ...updates} : b));
+  };
   const removeBlock = (id) => updateBlocks(visibleBlocks.filter(b => b.id !== id));
   const moveBlock = (id, dir) => { const i = visibleBlocks.findIndex(b => b.id === id); if (i === -1) return; const ni = dir === 'up' ? i-1 : i+1; if (ni < 0 || ni >= visibleBlocks.length) return; const arr = [...visibleBlocks]; [arr[i], arr[ni]] = [arr[ni], arr[i]]; updateBlocks(arr); };
 
@@ -1982,10 +2004,22 @@ function PasswordDialog({ mode, onClose, onSubmit }) {
 
 // ============== BLOQUES ==============
 function BlockEditor({ block, isFirst, isLast, onUpdate, onRemove, onMoveUp, onMoveDown }) {
-  const [showControls, setShowControls] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const showControls = hovered || focused;
+
+  // Espaciado vertical entre bloques: texto más compacto, imágenes con aire
+  const spacing = block.type === 'text' ? 'mb-1' : block.type === 'task' ? 'mb-2' : 'mb-4';
+
   return (
-    <div className="group relative">
-      <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden">
+    <div
+      className={`group relative ${spacing}`}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setTimeout(() => setFocused(false), 200)}
+    >
+      <div className="block-content">
         {block.type === 'text' && <TextBlock block={block} onUpdate={onUpdate}/>}
         {block.type === 'task' && <TaskBlock block={block} onUpdate={onUpdate}/>}
         {block.type === 'image' && <ImageBlock block={block} onUpdate={onUpdate}/>}
@@ -1993,9 +2027,17 @@ function BlockEditor({ block, isFirst, isLast, onUpdate, onRemove, onMoveUp, onM
         {block.type === 'voice' && <VoiceBlock block={block} onUpdate={onUpdate}/>}
         {block.type === 'link' && <LinkBlock block={block} onUpdate={onUpdate}/>}
       </div>
-      <div className="flex items-center justify-end gap-1 mt-1 px-1">
-        <button onClick={() => setShowControls(!showControls)} className="text-xs text-stone-400 hover:text-stone-700">{showControls?'Cerrar':'Opciones'}</button>
-        {showControls && <><button onClick={onMoveUp} disabled={isFirst} className="w-7 h-7 rounded-lg hover:bg-stone-200 flex items-center justify-center disabled:opacity-30"><ChevronUp size={14}/></button><button onClick={onMoveDown} disabled={isLast} className="w-7 h-7 rounded-lg hover:bg-stone-200 flex items-center justify-center disabled:opacity-30"><ChevronDown size={14}/></button><button onClick={onRemove} className="w-7 h-7 rounded-lg hover:bg-rose-100 text-rose-500 flex items-center justify-center"><Trash2 size={14}/></button></>}
+      {/* Controles flotantes minimalistas */}
+      <div className={`absolute -right-1 top-0 flex flex-col gap-0.5 transition-opacity ${showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+        <button onMouseDown={(e) => e.preventDefault()} onClick={onMoveUp} disabled={isFirst} className="w-6 h-6 rounded-md bg-white/95 backdrop-blur border border-stone-200 hover:bg-stone-50 flex items-center justify-center disabled:opacity-30 shadow-sm" title="Subir">
+          <ChevronUp size={12}/>
+        </button>
+        <button onMouseDown={(e) => e.preventDefault()} onClick={onMoveDown} disabled={isLast} className="w-6 h-6 rounded-md bg-white/95 backdrop-blur border border-stone-200 hover:bg-stone-50 flex items-center justify-center disabled:opacity-30 shadow-sm" title="Bajar">
+          <ChevronDown size={12}/>
+        </button>
+        <button onMouseDown={(e) => e.preventDefault()} onClick={onRemove} className="w-6 h-6 rounded-md bg-white/95 backdrop-blur border border-stone-200 hover:bg-rose-50 hover:border-rose-300 text-stone-500 hover:text-rose-500 flex items-center justify-center shadow-sm" title="Eliminar bloque">
+          <Trash2 size={12}/>
+        </button>
       </div>
     </div>
   );
@@ -2004,9 +2046,36 @@ function BlockEditor({ block, isFirst, isLast, onUpdate, onRemove, onMoveUp, onM
 function TextBlock({ block, onUpdate }) {
   const [content, setContent] = useState(block.content || '');
   const timeoutRef = useRef();
+  const textareaRef = useRef();
+
   useEffect(() => { setContent(block.content || ''); }, [block.id]);
-  const handleChange = (val) => { setContent(val); clearTimeout(timeoutRef.current); timeoutRef.current = setTimeout(() => onUpdate({ content: val }), 300); };
-  return <textarea value={content} onChange={e => handleChange(e.target.value)} placeholder="Escribe lo que pase por tu mente..." rows={Math.max(3, content.split('\n').length+1)} className="w-full p-4 text-base focus:outline-none resize-none leading-relaxed bg-transparent placeholder-stone-400" style={{minHeight:'90px'}}/>;
+
+  // Auto-resize: el textarea crece según el contenido para que no haya scroll interno
+  const autoResize = () => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = el.scrollHeight + 'px';
+  };
+  useEffect(() => { autoResize(); }, [content]);
+
+  const handleChange = (val) => {
+    setContent(val);
+    clearTimeout(timeoutRef.current);
+    timeoutRef.current = setTimeout(() => onUpdate({ content: val }), 300);
+  };
+
+  return (
+    <textarea
+      ref={textareaRef}
+      value={content}
+      onChange={e => handleChange(e.target.value)}
+      placeholder="Escribe lo que pase por tu mente..."
+      rows={1}
+      className="w-full text-base focus:outline-none resize-none leading-relaxed bg-transparent placeholder-stone-400 overflow-hidden block"
+      style={{ minHeight: '1.75rem' }}
+    />
+  );
 }
 
 // Lista de tareas tipo Wunderlist: Enter crea otro item, Enter en vacío termina la lista, Backspace en vacío borra el item
@@ -2186,16 +2255,16 @@ function TaskBlock({ block, onUpdate }) {
 
   if (localItems.length === 0) {
     return (
-      <button onClick={addFirstItem} className="w-full p-4 flex items-center gap-3 hover:bg-stone-50 transition text-left">
-        <SquareEmpty size={20} className="text-stone-300 flex-shrink-0" />
+      <button onClick={addFirstItem} className="w-full py-2 flex items-center gap-3 hover:bg-stone-50/50 rounded-lg transition text-left">
+        <SquareEmpty size={18} className="text-stone-300 flex-shrink-0 ml-1" />
         <span className="text-sm text-stone-400">Toca para empezar la lista de tareas…</span>
       </button>
     );
   }
 
   return (
-    <div className="py-2">
-      <div className="px-4 pt-2 pb-1 flex items-center justify-between">
+    <div className="my-1">
+      <div className="px-1 pt-1 pb-1 flex items-center justify-between">
         <span className="text-[10px] font-semibold text-stone-500 uppercase tracking-wider">{localItems.length > 1 ? 'Lista de tareas' : 'Tarea'}</span>
         <div className="flex items-center gap-2">
           {localItems.length > 1 && <span className="text-[10px] text-stone-500">{doneCount}/{localItems.length}</span>}
@@ -2220,7 +2289,7 @@ function TaskBlock({ block, onUpdate }) {
               onDragLeave={onDragLeave}
               onDrop={(e) => onDrop(e, item.id)}
               onDragEnd={onDragEnd}
-              className={`flex items-start gap-2 px-2 py-1.5 transition ${isDragging ? 'opacity-40' : ''} ${isDragOver ? 'bg-amber-50 border-t-2 border-amber-400' : ''}`}
+              className={`flex items-start gap-2 py-1 transition ${isDragging ? 'opacity-40' : ''} ${isDragOver ? 'bg-amber-50 border-t-2 border-amber-400 rounded' : ''}`}
               style={{ touchAction: draggingId ? 'none' : 'auto' }}
             >
               <button
@@ -2229,7 +2298,7 @@ function TaskBlock({ block, onUpdate }) {
                 aria-label="Arrastrar para reordenar"
                 style={{ touchAction: 'none' }}
               >
-                <GripVertical size={16} />
+                <GripVertical size={14} />
               </button>
               <button onClick={() => toggleItem(item.id)} className="mt-1.5 flex-shrink-0" aria-label="Marcar como hecha">
                 {item.done ? <CheckSquare size={18} className="text-emerald-600" /> : <SquareEmpty size={18} className="text-stone-300 hover:text-stone-600" />}
@@ -2255,7 +2324,7 @@ function TaskBlock({ block, onUpdate }) {
         })}
       </div>
 
-      <button onClick={addItemAtEnd} className="w-full px-4 py-2 flex items-center gap-3 text-stone-400 hover:text-stone-700 hover:bg-stone-50 transition text-left">
+      <button onClick={addItemAtEnd} className="w-full px-1 py-1.5 flex items-center gap-3 text-stone-400 hover:text-stone-700 transition text-left">
         <Plus size={14} />
         <span className="text-xs">Añadir tarea</span>
       </button>
@@ -2264,13 +2333,68 @@ function TaskBlock({ block, onUpdate }) {
 }
 
 function ImageBlock({ block, onUpdate }) {
-  const fileRef = useRef(); const [caption, setCaption] = useState(block.caption || ''); const timeoutRef = useRef();
-  const handleFile = (e) => { const f = e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = (ev) => onUpdate({ imageData: ev.target.result }); r.readAsDataURL(f); };
-  const handleCaption = (val) => { setCaption(val); clearTimeout(timeoutRef.current); timeoutRef.current = setTimeout(() => onUpdate({ caption: val }), 300); };
+  const fileRef = useRef();
+  const [caption, setCaption] = useState(block.caption || '');
+  const timeoutRef = useRef();
+
+  const handleFiles = (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    // Primera imagen: va a este bloque
+    const [first, ...rest] = files;
+    const r = new FileReader();
+    r.onload = (ev) => {
+      // Si hay más imágenes, las pasamos al padre para que cree bloques nuevos
+      if (rest.length === 0) {
+        onUpdate({ imageData: ev.target.result });
+      } else {
+        // Leemos las restantes en paralelo
+        const readers = rest.map(f => new Promise(resolve => {
+          const fr = new FileReader();
+          fr.onload = (e2) => resolve(e2.target.result);
+          fr.readAsDataURL(f);
+        }));
+        Promise.all(readers).then(additionalData => {
+          onUpdate({ imageData: ev.target.result, _additionalImages: additionalData });
+        });
+      }
+    };
+    r.readAsDataURL(first);
+    // limpiar el input para permitir re-selección de la misma foto
+    e.target.value = '';
+  };
+
+  const handleCaption = (val) => {
+    setCaption(val);
+    clearTimeout(timeoutRef.current);
+    timeoutRef.current = setTimeout(() => onUpdate({ caption: val }), 300);
+  };
+
+  if (block.imageData) {
+    return (
+      <div className="my-2">
+        <img src={block.imageData} alt="" className="w-full max-h-96 object-contain rounded-lg" />
+        <input
+          value={caption}
+          onChange={e => handleCaption(e.target.value)}
+          placeholder="Pie de foto (opcional)"
+          className="w-full mt-1.5 text-xs text-stone-500 italic bg-transparent focus:outline-none placeholder-stone-400 text-center"
+        />
+      </div>
+    );
+  }
+
   return (
-    <div>
-      <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} className="hidden"/>
-      {block.imageData ? <><img src={block.imageData} alt="" className="w-full max-h-96 object-contain bg-stone-100"/><input value={caption} onChange={e => handleCaption(e.target.value)} placeholder="Pie de foto" className="w-full px-4 py-2.5 text-xs text-stone-600 bg-stone-50 border-t border-stone-200 focus:outline-none placeholder-stone-400"/></> : <button onClick={() => fileRef.current.click()} className="w-full aspect-video bg-stone-50 flex flex-col items-center justify-center gap-2 hover:bg-stone-100 transition"><ImageIcon size={28} className="text-stone-400"/><span className="text-sm font-medium text-stone-600">Seleccionar imagen</span><span className="text-xs text-stone-400">galería, cámara o pegar</span></button>}
+    <div className="my-2">
+      <input ref={fileRef} type="file" accept="image/*" multiple onChange={handleFiles} className="hidden" />
+      <button
+        onClick={() => fileRef.current.click()}
+        className="w-full py-8 border-2 border-dashed border-stone-300 hover:border-stone-500 rounded-lg flex flex-col items-center justify-center gap-1.5 hover:bg-stone-50/50 transition"
+      >
+        <ImageIcon size={24} className="text-stone-400" />
+        <span className="text-sm font-medium text-stone-600">Seleccionar imágenes</span>
+        <span className="text-[10px] text-stone-400">podés elegir varias a la vez</span>
+      </button>
     </div>
   );
 }
@@ -2286,9 +2410,14 @@ function DrawingBlock({ block, onUpdate }) {
   const stop = () => setDrawing(false);
   const save = () => { onUpdate({ drawingData: canvasRef.current.toDataURL('image/png') }); setEditing(false); };
   const clear = () => { const ctx = canvasRef.current.getContext('2d'); ctx.fillStyle='white'; ctx.fillRect(0,0,canvasRef.current.width,canvasRef.current.height); };
-  if (!editing && block.drawingData) return <div onClick={() => setEditing(true)} className="cursor-pointer"><img src={block.drawingData} alt="" className="w-full bg-white"/><div className="px-4 py-2 text-xs text-stone-500 border-t border-stone-100 bg-stone-50">Toca para editar</div></div>;
+  if (!editing && block.drawingData) return (
+    <div onClick={() => setEditing(true)} className="cursor-pointer my-2">
+      <img src={block.drawingData} alt="" className="w-full rounded-lg bg-white"/>
+      <p className="text-[10px] text-stone-400 italic text-center mt-1">Toca para editar el dibujo</p>
+    </div>
+  );
   return (
-    <div>
+    <div className="my-2 rounded-lg overflow-hidden border border-stone-200">
       <canvas ref={canvasRef} width={800} height={600} onMouseDown={start} onMouseMove={draw} onMouseUp={stop} onMouseLeave={stop} onTouchStart={start} onTouchMove={draw} onTouchEnd={stop} className="w-full aspect-[4/3] bg-white touch-none" style={{touchAction:'none'}}/>
       <div className="flex items-center justify-between p-3 bg-stone-50 border-t border-stone-200 flex-wrap gap-2">
         <div className="flex items-center gap-1.5">{colors.map(c => <button key={c} onClick={() => setColor(c)} className={`w-6 h-6 rounded-full transition ${color===c?'ring-2 ring-offset-1 ring-stone-900':''}`} style={{backgroundColor:c}}/>)}</div>
@@ -2305,18 +2434,18 @@ function VoiceBlock({ block, onUpdate }) {
   const stopRec = () => { mrRef.current?.stop(); setRecording(false); clearInterval(timerRef.current); };
   const fmt = (s) => `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`;
   if (block.audioData) return (
-    <div className="p-4 flex items-center gap-4">
+    <div className="my-2 py-2 px-3 bg-rose-50/50 rounded-lg flex items-center gap-3">
       <audio ref={audioRef} src={block.audioData} onEnded={() => setPlaying(false)} className="hidden"/>
-      <button onClick={() => { if (playing) { audioRef.current.pause(); setPlaying(false); } else { audioRef.current.play(); setPlaying(true); }}} className="w-12 h-12 rounded-full bg-rose-500 text-white flex items-center justify-center flex-shrink-0">{playing?<Pause size={20}/>:<Play size={20} className="ml-0.5"/>}</button>
-      <div className="flex-1"><p className="text-sm font-medium">Nota de voz</p><p className="text-xs text-stone-500">Duración: {block.duration||'0:00'}</p></div>
+      <button onClick={() => { if (playing) { audioRef.current.pause(); setPlaying(false); } else { audioRef.current.play(); setPlaying(true); }}} className="w-10 h-10 rounded-full bg-rose-500 text-white flex items-center justify-center flex-shrink-0">{playing?<Pause size={16}/>:<Play size={16} className="ml-0.5"/>}</button>
+      <div className="flex-1"><p className="text-sm font-medium">Nota de voz</p><p className="text-xs text-stone-500">{block.duration||'0:00'}</p></div>
       <button onClick={() => onUpdate({ audioData: null, duration: null })} className="text-xs text-rose-600 underline">Regrabar</button>
     </div>
   );
   return (
-    <div className="p-6 text-center">
-      <button onClick={recording?stopRec:startRec} className={`w-16 h-16 mx-auto rounded-full flex items-center justify-center transition ${recording?'bg-rose-500 pulse-ring':'bg-stone-900'} text-white`}>{recording?<Square size={22} fill="white"/>:<Mic size={22}/>}</button>
-      <p className="mt-3 text-xl font-mono font-semibold">{fmt(time)}</p>
-      <p className="text-xs text-stone-500 mt-1">{recording?'Grabando…':'Toca para grabar'}</p>
+    <div className="my-2 py-6 text-center bg-stone-50/50 rounded-lg">
+      <button onClick={recording?stopRec:startRec} className={`w-14 h-14 mx-auto rounded-full flex items-center justify-center transition ${recording?'bg-rose-500 pulse-ring':'bg-stone-900'} text-white`}>{recording?<Square size={20} fill="white"/>:<Mic size={20}/>}</button>
+      <p className="mt-2 text-lg font-mono font-semibold">{fmt(time)}</p>
+      <p className="text-xs text-stone-500 mt-0.5">{recording?'Grabando…':'Toca para grabar'}</p>
     </div>
   );
 }
@@ -2325,15 +2454,20 @@ function LinkBlock({ block, onUpdate }) {
   const [url, setUrl] = useState(block.url || ''); const [content, setContent] = useState(block.content || ''); const [editing, setEditing] = useState(!block.url);
   const handleSave = () => { onUpdate({ url, content }); setEditing(false); };
   if (!editing && block.url) return (
-    <div className="p-4">
-      <div className="flex items-start gap-3"><div className="w-10 h-10 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center flex-shrink-0"><Link2 size={18}/></div><div className="flex-1 min-w-0"><a href={block.url} target="_blank" rel="noreferrer" className="text-sm text-amber-700 break-all underline">{block.url}</a>{block.content && <p className="text-xs text-stone-600 mt-1">{block.content}</p>}<button onClick={() => setEditing(true)} className="text-xs text-stone-500 underline mt-1">Editar</button></div></div>
+    <div className="my-2 py-2.5 px-3 bg-amber-50/60 rounded-lg flex items-start gap-3">
+      <div className="w-8 h-8 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center flex-shrink-0"><Link2 size={15}/></div>
+      <div className="flex-1 min-w-0">
+        <a href={block.url} target="_blank" rel="noreferrer" className="text-sm text-amber-800 break-all underline">{block.url}</a>
+        {block.content && <p className="text-xs text-stone-600 mt-1">{block.content}</p>}
+        <button onClick={() => setEditing(true)} className="text-xs text-stone-500 underline mt-1">Editar</button>
+      </div>
     </div>
   );
   return (
-    <div className="p-4 space-y-2">
-      <input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://..." className="w-full bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-stone-900"/>
-      <textarea value={content} onChange={e => setContent(e.target.value)} placeholder="Notas (opcional)" rows={2} className="w-full bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-stone-900 resize-none"/>
-      <button onClick={handleSave} disabled={!url.trim()} className="px-3 py-1.5 bg-stone-900 text-white rounded-lg text-xs font-medium disabled:opacity-40">Guardar</button>
+    <div className="my-2 space-y-2">
+      <input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://..." className="w-full bg-white/50 border border-stone-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-stone-900"/>
+      <textarea value={content} onChange={e => setContent(e.target.value)} placeholder="Notas (opcional)" rows={2} className="w-full bg-white/50 border border-stone-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-stone-900 resize-none"/>
+      <button onClick={handleSave} disabled={!url.trim()} className="px-3 py-1.5 bg-stone-900 text-white rounded-lg text-xs font-medium disabled:opacity-40">Guardar enlace</button>
     </div>
   );
 }
