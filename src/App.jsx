@@ -2125,24 +2125,63 @@ function TextBlock({ block, onUpdate }) {
   const timeoutRef = useRef();
   const [showToolbar, setShowToolbar] = useState(false);
   const [focused, setFocused] = useState(false);
+  // Estado actual del formato bajo el cursor: { bold, italic, underline, strikethrough, blockTag, list }
+  const [activeFormats, setActiveFormats] = useState({});
 
   // Inicializar contenido (una sola vez al montar o al cambiar de bloque)
   useEffect(() => {
     if (!editorRef.current) return;
     const raw = block.content || '';
-    // Si ya es HTML, lo metemos tal cual. Si es texto plano legacy, lo convertimos a HTML
     const initial = isRichContent(raw) ? sanitizeRichHTML(raw) : plainToRich(raw);
-    // Solo actualizar si el DOM no coincide (para evitar reseteo del cursor)
     if (editorRef.current.innerHTML !== initial) {
       editorRef.current.innerHTML = initial;
     }
   }, [block.id]);
+
+  // Detectar qué formatos están activos donde está el cursor
+  const updateActiveFormats = () => {
+    if (!editorRef.current) return;
+    try {
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0) return;
+      // Verificar que la selección está dentro de este editor
+      const range = selection.getRangeAt(0);
+      if (!editorRef.current.contains(range.commonAncestorContainer)) return;
+
+      const formats = {
+        bold: document.queryCommandState('bold'),
+        italic: document.queryCommandState('italic'),
+        underline: document.queryCommandState('underline'),
+        strikethrough: document.queryCommandState('strikethrough'),
+      };
+
+      // Detectar tag del bloque padre (h1, h2, h3, p) y si es item de lista
+      let node = range.startContainer;
+      if (node.nodeType === Node.TEXT_NODE) node = node.parentNode;
+      let blockTag = 'p';
+      let inUL = false, inOL = false;
+      while (node && node !== editorRef.current) {
+        const tag = (node.tagName || '').toLowerCase();
+        if (['h1','h2','h3','p','div'].includes(tag) && blockTag === 'p') {
+          blockTag = tag === 'div' ? 'p' : tag;
+        }
+        if (tag === 'ul') inUL = true;
+        if (tag === 'ol') inOL = true;
+        node = node.parentNode;
+      }
+      formats.blockTag = blockTag;
+      formats.unorderedList = inUL;
+      formats.orderedList = inOL;
+      setActiveFormats(formats);
+    } catch (e) { /* ignorar errores de selección */ }
+  };
 
   const handleInput = () => {
     if (!editorRef.current) return;
     const html = editorRef.current.innerHTML;
     clearTimeout(timeoutRef.current);
     timeoutRef.current = setTimeout(() => onUpdate({ content: html }), 300);
+    updateActiveFormats();
   };
 
   // Aplica un comando de formato sobre la selección actual
@@ -2150,7 +2189,6 @@ function TextBlock({ block, onUpdate }) {
     editorRef.current?.focus();
     document.execCommand(command, false, value || null);
     handleInput();
-    setShowToolbar(false);
   };
 
   // Cambiar el tipo de bloque (párrafo, h1, h2, h3)
@@ -2158,7 +2196,6 @@ function TextBlock({ block, onUpdate }) {
     editorRef.current?.focus();
     document.execCommand('formatBlock', false, tag);
     handleInput();
-    setShowToolbar(false);
   };
 
   // Atajos de teclado
@@ -2168,7 +2205,21 @@ function TextBlock({ block, onUpdate }) {
       else if (e.key === 'i') { e.preventDefault(); applyFormat('italic'); }
       else if (e.key === 'u') { e.preventDefault(); applyFormat('underline'); }
     }
+    // Actualizar formato activo después de mover el cursor con flechas
+    setTimeout(updateActiveFormats, 10);
   };
+
+  // Listener global para actualizar formato activo al cambiar la selección dentro del editor
+  useEffect(() => {
+    const handler = () => {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0 && editorRef.current?.contains(sel.anchorNode)) {
+        updateActiveFormats();
+      }
+    };
+    document.addEventListener('selectionchange', handler);
+    return () => document.removeEventListener('selectionchange', handler);
+  }, []);
 
   // Estilos para el contenido renderizado (afectan h1, h2, h3, ul, ol dentro del editor)
   return (
@@ -2224,44 +2275,46 @@ function TextBlock({ block, onUpdate }) {
           className="absolute z-30 left-0 top-9 bg-white border border-stone-200 rounded-xl shadow-lg p-2 fade-up"
           onMouseDown={(e) => e.preventDefault()}
         >
+          {/* Helper para resaltar botón activo: bg gris fuerte + texto oscuro */}
+          {(() => null)()}
           <div className="grid grid-cols-4 gap-1 mb-2 pb-2 border-b border-stone-100">
-            <button onClick={() => applyBlock('p')} className="flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-md hover:bg-stone-100 transition" title="Párrafo">
-              <Type size={14} className="text-stone-600"/>
-              <span className="text-[9px] text-stone-500">Normal</span>
+            <button onClick={() => applyBlock('p')} className={`flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-md transition ${activeFormats.blockTag === 'p' ? 'bg-stone-200' : 'hover:bg-stone-100'}`} title="Párrafo">
+              <Type size={14} className="text-stone-700"/>
+              <span className="text-[9px] text-stone-600">Normal</span>
             </button>
-            <button onClick={() => applyBlock('h1')} className="flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-md hover:bg-stone-100 transition" title="Título grande">
-              <Heading1 size={14} className="text-stone-600"/>
-              <span className="text-[9px] text-stone-500">Título</span>
+            <button onClick={() => applyBlock('h1')} className={`flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-md transition ${activeFormats.blockTag === 'h1' ? 'bg-stone-200' : 'hover:bg-stone-100'}`} title="Título grande">
+              <Heading1 size={14} className="text-stone-700"/>
+              <span className="text-[9px] text-stone-600">Título</span>
             </button>
-            <button onClick={() => applyBlock('h2')} className="flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-md hover:bg-stone-100 transition" title="Subtítulo">
-              <Heading2 size={14} className="text-stone-600"/>
-              <span className="text-[9px] text-stone-500">Subt.</span>
+            <button onClick={() => applyBlock('h2')} className={`flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-md transition ${activeFormats.blockTag === 'h2' ? 'bg-stone-200' : 'hover:bg-stone-100'}`} title="Subtítulo">
+              <Heading2 size={14} className="text-stone-700"/>
+              <span className="text-[9px] text-stone-600">Subt.</span>
             </button>
-            <button onClick={() => applyBlock('h3')} className="flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-md hover:bg-stone-100 transition" title="Subtítulo chico">
-              <Heading3 size={14} className="text-stone-600"/>
-              <span className="text-[9px] text-stone-500">Subt. ch.</span>
+            <button onClick={() => applyBlock('h3')} className={`flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-md transition ${activeFormats.blockTag === 'h3' ? 'bg-stone-200' : 'hover:bg-stone-100'}`} title="Subtítulo chico">
+              <Heading3 size={14} className="text-stone-700"/>
+              <span className="text-[9px] text-stone-600">Subt. ch.</span>
             </button>
           </div>
           <div className="grid grid-cols-4 gap-1 mb-2 pb-2 border-b border-stone-100">
-            <button onClick={() => applyFormat('bold')} className="px-2 py-1.5 rounded-md hover:bg-stone-100 transition flex items-center justify-center" title="Negrita (Ctrl+B)">
+            <button onClick={() => applyFormat('bold')} className={`px-2 py-1.5 rounded-md transition flex items-center justify-center ${activeFormats.bold ? 'bg-stone-200' : 'hover:bg-stone-100'}`} title="Negrita (Ctrl+B)">
               <Bold size={14} className="text-stone-700"/>
             </button>
-            <button onClick={() => applyFormat('italic')} className="px-2 py-1.5 rounded-md hover:bg-stone-100 transition flex items-center justify-center" title="Cursiva (Ctrl+I)">
+            <button onClick={() => applyFormat('italic')} className={`px-2 py-1.5 rounded-md transition flex items-center justify-center ${activeFormats.italic ? 'bg-stone-200' : 'hover:bg-stone-100'}`} title="Cursiva (Ctrl+I)">
               <Italic size={14} className="text-stone-700"/>
             </button>
-            <button onClick={() => applyFormat('underline')} className="px-2 py-1.5 rounded-md hover:bg-stone-100 transition flex items-center justify-center" title="Subrayado (Ctrl+U)">
+            <button onClick={() => applyFormat('underline')} className={`px-2 py-1.5 rounded-md transition flex items-center justify-center ${activeFormats.underline ? 'bg-stone-200' : 'hover:bg-stone-100'}`} title="Subrayado (Ctrl+U)">
               <Underline size={14} className="text-stone-700"/>
             </button>
-            <button onClick={() => applyFormat('strikethrough')} className="px-2 py-1.5 rounded-md hover:bg-stone-100 transition flex items-center justify-center" title="Tachado">
+            <button onClick={() => applyFormat('strikethrough')} className={`px-2 py-1.5 rounded-md transition flex items-center justify-center ${activeFormats.strikethrough ? 'bg-stone-200' : 'hover:bg-stone-100'}`} title="Tachado">
               <Strikethrough size={14} className="text-stone-700"/>
             </button>
           </div>
           <div className="grid grid-cols-2 gap-1">
-            <button onClick={() => applyFormat('insertUnorderedList')} className="flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-stone-100 transition" title="Viñetas">
+            <button onClick={() => applyFormat('insertUnorderedList')} className={`flex items-center gap-1.5 px-2 py-1.5 rounded-md transition ${activeFormats.unorderedList ? 'bg-stone-200' : 'hover:bg-stone-100'}`} title="Viñetas">
               <ListBullet size={14} className="text-stone-700"/>
               <span className="text-[10px] text-stone-600">Viñetas</span>
             </button>
-            <button onClick={() => applyFormat('insertOrderedList')} className="flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-stone-100 transition" title="Lista numerada">
+            <button onClick={() => applyFormat('insertOrderedList')} className={`flex items-center gap-1.5 px-2 py-1.5 rounded-md transition ${activeFormats.orderedList ? 'bg-stone-200' : 'hover:bg-stone-100'}`} title="Lista numerada">
               <ListOrdered size={14} className="text-stone-700"/>
               <span className="text-[10px] text-stone-600">Numerada</span>
             </button>
