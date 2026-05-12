@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Search, Plus, Mic, Image as ImageIcon, Link2, PenTool, FileText, Trash2, X, Network, Filter, Square, Eraser, Download, MoreVertical, Play, Pause, ArrowLeft, Star, Clock, Type, ChevronUp, ChevronDown, Lock, Unlock, Fingerprint, Shield, ShieldCheck, Eye, EyeOff, KeyRound, Folder, FolderPlus, Book, ChevronRight, FileDown, Clipboard, CheckSquare, Square as SquareEmpty, Sparkles, MessageSquare, Calendar, Tag as TagIcon, ListTodo, Wand2, Zap, Pin, PinOff, GripVertical, LayoutGrid, List as ListIcon, Rows3, Palette, Cloud, CloudOff, RefreshCw, AlertCircle, CheckCircle2, LogOut } from 'lucide-react';
+import { Search, Plus, Mic, Image as ImageIcon, Link2, PenTool, FileText, Trash2, X, Network, Filter, Square, Eraser, Download, MoreVertical, Play, Pause, ArrowLeft, Star, Clock, Type, ChevronUp, ChevronDown, Lock, Unlock, Fingerprint, Shield, ShieldCheck, Eye, EyeOff, KeyRound, Folder, FolderPlus, Book, ChevronRight, FileDown, Clipboard, CheckSquare, Square as SquareEmpty, Sparkles, MessageSquare, Calendar, Tag as TagIcon, ListTodo, Wand2, Zap, Pin, PinOff, GripVertical, LayoutGrid, List as ListIcon, Rows3, Palette, Cloud, CloudOff, RefreshCw, AlertCircle, CheckCircle2, LogOut, Bold, Italic, Underline, Strikethrough, Heading1, Heading2, Heading3, List as ListBullet, ListOrdered } from 'lucide-react';
 
 // ====================================================================
 // GOOGLE DRIVE SYNC
@@ -262,7 +262,7 @@ function noteText(note, decryptedBlocks = null) {
   if (note.tags) parts.push(note.tags.join(' '));
   const blocks = note.encrypted ? (decryptedBlocks || []) : (note.blocks || []);
   for (const b of blocks) {
-    if (b.type === 'text' && b.content) parts.push(b.content);
+    if (b.type === 'text' && b.content) parts.push(richToPlain(b.content));
     if (b.type === 'link' && (b.url || b.content)) parts.push((b.url || '') + ' ' + (b.content || ''));
     if (b.type === 'image' && b.caption) parts.push(b.caption);
     if (b.type === 'task') {
@@ -595,7 +595,7 @@ export default function CerebroDigital() {
         if ((n.tags || []).some(t => t.toLowerCase().includes(q))) score += 1.5;
         if (!n.encrypted) {
           for (const b of (n.blocks || [])) {
-            if (b.type === 'text' && (b.content || '').toLowerCase().includes(q)) { score += 1; break; }
+            if (b.type === 'text' && richToPlain(b.content || '').toLowerCase().includes(q)) { score += 1; break; }
             if (b.type === 'link' && ((b.url || '').toLowerCase().includes(q) || (b.content || '').toLowerCase().includes(q))) { score += 1; break; }
             if (b.type === 'image' && (b.caption || '').toLowerCase().includes(q)) { score += 0.8; break; }
             if (b.type === 'task' && getTaskItems(b).some(it => (it.text || '').toLowerCase().includes(q))) { score += 1; break; }
@@ -1186,7 +1186,7 @@ function NoteCard({ note, notebooks = [], viewMode = 'grid' }) {
 
   // Helper: título a mostrar (fallback en cascada)
   const displayTitle = note.title
-    || (firstText && firstText.content.slice(0, 80))
+    || (firstText && richToPlain(firstText.content).slice(0, 80))
     || (firstLink && firstLink.url)
     || (hasVoice && 'Nota de voz')
     || (taskBlocks.length > 0 && (firstTaskTxt || 'Lista de tareas'))
@@ -1274,7 +1274,7 @@ function NoteCard({ note, notebooks = [], viewMode = 'grid' }) {
             {note.starred && <Star size={11} className="text-amber-500 fill-amber-500" />}
           </div>
           <h3 className={`font-semibold text-base line-clamp-2 ${isEmpty ? 'text-stone-400 italic' : 'text-stone-900'}`}>{displayTitle}</h3>
-          {note.title && firstText && <p className="text-sm text-stone-500 line-clamp-2 mt-1 leading-relaxed">{firstText.content}</p>}
+          {note.title && firstText && <p className="text-sm text-stone-500 line-clamp-2 mt-1 leading-relaxed">{richToPlain(firstText.content)}</p>}
           <div className="flex items-center gap-1.5 mt-2 flex-wrap">
             {counts.text > 0 && <span className="w-5 h-5 rounded bg-blue-50 text-blue-600 flex items-center justify-center"><Type size={11} /></span>}
             {counts.image > 0 && <span className="w-5 h-5 rounded bg-emerald-50 text-emerald-600 flex items-center justify-center"><ImageIcon size={11} /></span>}
@@ -1320,12 +1320,12 @@ function NoteCard({ note, notebooks = [], viewMode = 'grid' }) {
           {note.starred && <Star size={12} className="text-amber-500 fill-amber-500 ml-auto" />}
         </div>
         {note.title && <h3 className="font-semibold text-sm text-stone-900 line-clamp-2 mb-1">{note.title}</h3>}
-        {!note.title && firstText && <h3 className="font-semibold text-sm text-stone-900 line-clamp-2 mb-1">{firstText.content.slice(0,60)}</h3>}
+        {!note.title && firstText && <h3 className="font-semibold text-sm text-stone-900 line-clamp-2 mb-1">{richToPlain(firstText.content).slice(0,60)}</h3>}
         {!note.title && !firstText && firstLink && <h3 className="font-semibold text-sm text-stone-900 line-clamp-1 mb-1">{firstLink.url}</h3>}
         {!note.title && !firstText && !firstLink && hasVoice && <h3 className="font-semibold text-sm text-stone-500 italic mb-1">Nota de voz</h3>}
         {!note.title && !firstText && !firstLink && !hasVoice && taskBlocks.length > 0 && <h3 className="font-semibold text-sm text-stone-900 line-clamp-2 mb-1">{firstTaskTxt || 'Lista de tareas'}</h3>}
         {!note.title && !firstText && !firstLink && !hasVoice && blocks.length === 0 && <h3 className="font-semibold text-sm text-stone-400 italic mb-1">Nota vacía</h3>}
-        {firstText && note.title && <p className="text-xs text-stone-500 line-clamp-2 leading-relaxed">{firstText.content}</p>}
+        {firstText && note.title && <p className="text-xs text-stone-500 line-clamp-2 leading-relaxed">{richToPlain(firstText.content)}</p>}
         {note.tags?.length > 0 && <div className="flex flex-wrap gap-1 mt-2">{note.tags.slice(0,2).map(t=><span key={t} className="text-[10px] px-1.5 py-0.5 bg-stone-100 text-stone-600 rounded">#{t}</span>)}{note.tags.length>2&&<span className="text-[10px] text-stone-400">+{note.tags.length-2}</span>}</div>}
       </div>
     </div>
@@ -1533,7 +1533,7 @@ function ChatView({ notes, searchIndex, onBack, onOpen }) {
 
 function getFirstTextContent(note) {
   for (const b of (note.blocks || [])) {
-    if (b.type === 'text' && b.content) return b.content;
+    if (b.type === 'text' && b.content) return richToPlain(b.content);
     if (b.type === 'link' && b.content) return b.content;
     if (b.type === 'image' && b.caption) return b.caption;
     if (b.type === 'task') {
@@ -1953,7 +1953,28 @@ function noteToMarkdown(note) {
   if (note.tags?.length) { lines.push(note.tags.map(t => `#${t}`).join(' ')); lines.push(''); }
   if (note.encrypted) { lines.push('*[Nota cifrada]*'); return lines.join('\n'); }
   for (const b of (note.blocks || [])) {
-    if (b.type === 'text' && b.content) { lines.push(b.content); lines.push(''); }
+    if (b.type === 'text' && b.content) {
+      // Convertir HTML rico a Markdown básico
+      let md = b.content;
+      if (isRichContent(md)) {
+        md = md
+          .replace(/<h1[^>]*>(.*?)<\/h1>/gi, '# $1\n')
+          .replace(/<h2[^>]*>(.*?)<\/h2>/gi, '## $1\n')
+          .replace(/<h3[^>]*>(.*?)<\/h3>/gi, '### $1\n')
+          .replace(/<(strong|b)[^>]*>(.*?)<\/(strong|b)>/gi, '**$2**')
+          .replace(/<(em|i)[^>]*>(.*?)<\/(em|i)>/gi, '*$2*')
+          .replace(/<u[^>]*>(.*?)<\/u>/gi, '$1')
+          .replace(/<s[^>]*>(.*?)<\/s>/gi, '~~$1~~')
+          .replace(/<li[^>]*>(.*?)<\/li>/gi, '- $1\n')
+          .replace(/<\/?(ul|ol)[^>]*>/gi, '')
+          .replace(/<p[^>]*>(.*?)<\/p>/gi, '$1\n')
+          .replace(/<br\s*\/?>/gi, '\n')
+          .replace(/<[^>]+>/g, '')
+          .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ');
+      }
+      lines.push(md.trim());
+      lines.push('');
+    }
     else if (b.type === 'task') { for (const it of getTaskItems(b)) lines.push(`- [${it.done?'x':' '}] ${it.text || ''}`); if (getTaskItems(b).length > 0) lines.push(''); }
     else if (b.type === 'link' && b.url) { lines.push(`[${b.url}](${b.url})`); if (b.content) lines.push(`> ${b.content}`); lines.push(''); }
     else if (b.type === 'image' && b.imageData) { lines.push(`![imagen](${b.imageData})`); if (b.caption) lines.push(`*${b.caption}*`); lines.push(''); }
@@ -1968,14 +1989,20 @@ function noteToPrintableHTML(note) {
   let body = '';
   if (note.encrypted) body = '<p style="color:#999;font-style:italic">[Nota cifrada]</p>';
   else for (const b of (note.blocks || [])) {
-    if (b.type === 'text' && b.content) body += `<p>${esc(b.content).replace(/\n/g,'<br>')}</p>`;
+    if (b.type === 'text' && b.content) {
+      if (isRichContent(b.content)) {
+        body += `<div class="rich">${sanitizeRichHTML(b.content)}</div>`;
+      } else {
+        body += `<p>${esc(b.content).replace(/\n/g,'<br>')}</p>`;
+      }
+    }
     else if (b.type === 'task') { const items = getTaskItems(b); if (items.length > 0) body += `<div class="tasklist">${items.map(it => `<p class="task ${it.done?'done':''}">${it.done?'☑':'☐'} ${esc(it.text||'')}</p>`).join('')}</div>`; }
     else if (b.type === 'link' && b.url) body += `<div class="link"><a href="${esc(b.url)}">${esc(b.url)}</a>${b.content?`<p class="ln">${esc(b.content)}</p>`:''}</div>`;
     else if (b.type === 'image' && b.imageData) body += `<div class="img"><img src="${b.imageData}"/>${b.caption?`<p class="cap">${esc(b.caption)}</p>`:''}</div>`;
     else if (b.type === 'drawing' && b.drawingData) body += `<div class="img"><img src="${b.drawingData}"/></div>`;
     else if (b.type === 'voice') body += `<p class="voice">🎤 Nota de voz (${b.duration||'?'})</p>`;
   }
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(note.title||'Nota')}</title><style>@import url('https://fonts.googleapis.com/css2?family=Fraunces:wght@400;600&family=Inter:wght@400;500&display=swap');body{font-family:'Inter',sans-serif;max-width:720px;margin:40px auto;padding:0 30px;color:#1c1917;line-height:1.7}h1{font-family:'Fraunces',serif;font-size:32px;letter-spacing:-0.02em;margin:0 0 8px}.meta{color:#78716c;font-size:13px;margin-bottom:20px}.tags{margin-bottom:30px}.tag{display:inline-block;background:#fef3c7;color:#92400e;padding:2px 10px;border-radius:12px;font-size:12px;margin-right:6px}p{margin:0 0 14px;font-size:15px}.task.done{text-decoration:line-through;color:#999}.link{background:#fef3c7;border-left:3px solid #f59e0b;padding:12px 16px;margin:14px 0;border-radius:6px}.link a{color:#b45309;word-break:break-all}.ln{color:#57534e;font-size:13px;margin:6px 0 0}.img{margin:18px 0}.img img{max-width:100%;border-radius:8px}.cap{font-size:12px;color:#78716c;text-align:center;margin:6px 0 0;font-style:italic}.voice{color:#be185d;font-style:italic}@media print{body{margin:0;padding:20px}}</style></head><body><h1>${esc(note.title||'Sin título')}</h1><p class="meta">${date}</p>${tagsHTML}${body}</body></html>`;
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(note.title||'Nota')}</title><style>@import url('https://fonts.googleapis.com/css2?family=Fraunces:wght@400;600;700&family=Inter:wght@400;500;700&display=swap');body{font-family:'Inter',sans-serif;max-width:720px;margin:40px auto;padding:0 30px;color:#1c1917;line-height:1.7}h1{font-family:'Fraunces',serif;font-size:32px;letter-spacing:-0.02em;margin:0 0 8px}.meta{color:#78716c;font-size:13px;margin-bottom:20px}.tags{margin-bottom:30px}.tag{display:inline-block;background:#fef3c7;color:#92400e;padding:2px 10px;border-radius:12px;font-size:12px;margin-right:6px}p{margin:0 0 14px;font-size:15px}.task.done{text-decoration:line-through;color:#999}.link{background:#fef3c7;border-left:3px solid #f59e0b;padding:12px 16px;margin:14px 0;border-radius:6px}.link a{color:#b45309;word-break:break-all}.ln{color:#57534e;font-size:13px;margin:6px 0 0}.img{margin:18px 0}.img img{max-width:100%;border-radius:8px}.cap{font-size:12px;color:#78716c;text-align:center;margin:6px 0 0;font-style:italic}.voice{color:#be185d;font-style:italic}.rich h1{font-family:'Fraunces',serif;font-size:26px;font-weight:700;margin:14px 0 8px;letter-spacing:-0.02em}.rich h2{font-family:'Fraunces',serif;font-size:21px;font-weight:600;margin:12px 0 6px;letter-spacing:-0.01em}.rich h3{font-size:17px;font-weight:600;margin:10px 0 5px}.rich p{margin:0 0 10px;font-size:15px}.rich ul{list-style:disc;padding-left:24px;margin:8px 0}.rich ol{list-style:decimal;padding-left:24px;margin:8px 0}.rich li{margin:3px 0}.rich strong,.rich b{font-weight:700}.rich em,.rich i{font-style:italic}.rich u{text-decoration:underline}.rich s{text-decoration:line-through}@media print{body{margin:0;padding:20px}}</style></head><body><h1>${esc(note.title||'Sin título')}</h1><p class="meta">${date}</p>${tagsHTML}${body}</body></html>`;
 }
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
 
@@ -2043,38 +2070,205 @@ function BlockEditor({ block, isFirst, isLast, onUpdate, onRemove, onMoveUp, onM
   );
 }
 
+// Helper: detecta si el contenido es HTML (nuevo) o texto plano (legacy)
+function isRichContent(str) {
+  if (!str) return false;
+  // Si contiene tags HTML básicos consideramos que es rich
+  return /<(p|h1|h2|h3|ul|ol|li|strong|em|b|i|u|s|br|div)[\s>]/i.test(str);
+}
+
+// Sanea HTML para evitar inserciones peligrosas (XSS) y limita las etiquetas permitidas
+function sanitizeRichHTML(html) {
+  if (!html) return '';
+  // Quitar scripts, iframes, eventos inline
+  let clean = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<iframe[\s\S]*?<\/iframe>/gi, '')
+    .replace(/\son\w+\s*=\s*"[^"]*"/gi, '')
+    .replace(/\son\w+\s*=\s*'[^']*'/gi, '')
+    .replace(/javascript:/gi, '');
+  return clean;
+}
+
+// Convierte texto plano (con saltos de línea) a HTML básico para inicializar el editor
+function plainToRich(text) {
+  if (!text) return '';
+  // Cada párrafo separado por salto de línea va en un <p>
+  return text.split('\n').map(line => {
+    if (!line.trim()) return '<p><br></p>';
+    return `<p>${escapeHTMLBasic(line)}</p>`;
+  }).join('');
+}
+function escapeHTMLBasic(s) {
+  return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'})[c]);
+}
+
+// Convierte HTML (de los bloques de texto rich) a texto plano para búsqueda y previews
+function richToPlain(htmlOrText) {
+  if (!htmlOrText) return '';
+  if (!isRichContent(htmlOrText)) return htmlOrText;
+  // Insertar saltos donde haya bloques, convertir <li> en líneas
+  let s = htmlOrText
+    .replace(/<\/(p|h1|h2|h3|div|li)>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<li[^>]*>/gi, '• ');
+  // Quitar el resto de tags
+  s = s.replace(/<[^>]+>/g, '');
+  // Decodificar entidades básicas
+  s = s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/&#39;/g, "'").replace(/&quot;/g, '"');
+  // Colapsar múltiples saltos
+  return s.replace(/\n{3,}/g, '\n\n').trim();
+}
+
 function TextBlock({ block, onUpdate }) {
-  const [content, setContent] = useState(block.content || '');
+  const editorRef = useRef();
   const timeoutRef = useRef();
-  const textareaRef = useRef();
+  const [showToolbar, setShowToolbar] = useState(false);
+  const [focused, setFocused] = useState(false);
 
-  useEffect(() => { setContent(block.content || ''); }, [block.id]);
+  // Inicializar contenido (una sola vez al montar o al cambiar de bloque)
+  useEffect(() => {
+    if (!editorRef.current) return;
+    const raw = block.content || '';
+    // Si ya es HTML, lo metemos tal cual. Si es texto plano legacy, lo convertimos a HTML
+    const initial = isRichContent(raw) ? sanitizeRichHTML(raw) : plainToRich(raw);
+    // Solo actualizar si el DOM no coincide (para evitar reseteo del cursor)
+    if (editorRef.current.innerHTML !== initial) {
+      editorRef.current.innerHTML = initial;
+    }
+  }, [block.id]);
 
-  // Auto-resize: el textarea crece según el contenido para que no haya scroll interno
-  const autoResize = () => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = el.scrollHeight + 'px';
-  };
-  useEffect(() => { autoResize(); }, [content]);
-
-  const handleChange = (val) => {
-    setContent(val);
+  const handleInput = () => {
+    if (!editorRef.current) return;
+    const html = editorRef.current.innerHTML;
     clearTimeout(timeoutRef.current);
-    timeoutRef.current = setTimeout(() => onUpdate({ content: val }), 300);
+    timeoutRef.current = setTimeout(() => onUpdate({ content: html }), 300);
   };
 
+  // Aplica un comando de formato sobre la selección actual
+  const applyFormat = (command, value) => {
+    editorRef.current?.focus();
+    document.execCommand(command, false, value || null);
+    handleInput();
+    setShowToolbar(false);
+  };
+
+  // Cambiar el tipo de bloque (párrafo, h1, h2, h3)
+  const applyBlock = (tag) => {
+    editorRef.current?.focus();
+    document.execCommand('formatBlock', false, tag);
+    handleInput();
+    setShowToolbar(false);
+  };
+
+  // Atajos de teclado
+  const handleKeyDown = (e) => {
+    if (e.ctrlKey || e.metaKey) {
+      if (e.key === 'b') { e.preventDefault(); applyFormat('bold'); }
+      else if (e.key === 'i') { e.preventDefault(); applyFormat('italic'); }
+      else if (e.key === 'u') { e.preventDefault(); applyFormat('underline'); }
+    }
+  };
+
+  // Estilos para el contenido renderizado (afectan h1, h2, h3, ul, ol dentro del editor)
   return (
-    <textarea
-      ref={textareaRef}
-      value={content}
-      onChange={e => handleChange(e.target.value)}
-      placeholder="Escribe lo que pase por tu mente..."
-      rows={1}
-      className="w-full text-base focus:outline-none resize-none leading-relaxed bg-transparent placeholder-stone-400 overflow-hidden block"
-      style={{ minHeight: '1.75rem' }}
-    />
+    <div className="relative">
+      <style>{`
+        .rich-text-editor h1 { font-size: 1.75rem; font-weight: 700; line-height: 1.2; margin: 0.5rem 0 0.25rem; font-family: 'Fraunces', serif; letter-spacing: -0.02em; }
+        .rich-text-editor h2 { font-size: 1.4rem; font-weight: 600; line-height: 1.3; margin: 0.4rem 0 0.2rem; font-family: 'Fraunces', serif; letter-spacing: -0.01em; }
+        .rich-text-editor h3 { font-size: 1.15rem; font-weight: 600; line-height: 1.4; margin: 0.3rem 0 0.15rem; }
+        .rich-text-editor p { margin: 0.15rem 0; line-height: 1.65; }
+        .rich-text-editor ul { list-style: disc; padding-left: 1.5rem; margin: 0.3rem 0; }
+        .rich-text-editor ol { list-style: decimal; padding-left: 1.5rem; margin: 0.3rem 0; }
+        .rich-text-editor li { margin: 0.1rem 0; line-height: 1.5; }
+        .rich-text-editor strong, .rich-text-editor b { font-weight: 700; }
+        .rich-text-editor em, .rich-text-editor i { font-style: italic; }
+        .rich-text-editor u { text-decoration: underline; }
+        .rich-text-editor s { text-decoration: line-through; }
+        .rich-text-editor:empty:before {
+          content: attr(data-placeholder);
+          color: #a8a29e;
+          pointer-events: none;
+        }
+        .rich-text-editor:focus { outline: none; }
+      `}</style>
+
+      <div
+        ref={editorRef}
+        contentEditable
+        suppressContentEditableWarning
+        data-placeholder="Escribe lo que pase por tu mente..."
+        onInput={handleInput}
+        onKeyDown={handleKeyDown}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setTimeout(() => setFocused(false), 200)}
+        className="rich-text-editor w-full text-base focus:outline-none leading-relaxed bg-transparent"
+        style={{ minHeight: '1.75rem' }}
+      />
+
+      {/* Botón Aa para abrir el menú de formato */}
+      <div className={`absolute -left-9 top-0.5 transition-opacity ${focused || showToolbar ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+        <button
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => setShowToolbar(!showToolbar)}
+          className={`w-7 h-7 rounded-md flex items-center justify-center transition shadow-sm ${showToolbar ? 'bg-stone-900 text-white' : 'bg-white/95 backdrop-blur border border-stone-200 hover:bg-stone-100 text-stone-700'}`}
+          title="Formato de texto"
+        >
+          <span className="text-xs font-bold">Aa</span>
+        </button>
+      </div>
+
+      {/* Toolbar desplegable */}
+      {showToolbar && (
+        <div
+          className="absolute z-30 left-0 top-9 bg-white border border-stone-200 rounded-xl shadow-lg p-2 fade-up"
+          onMouseDown={(e) => e.preventDefault()}
+        >
+          <div className="grid grid-cols-4 gap-1 mb-2 pb-2 border-b border-stone-100">
+            <button onClick={() => applyBlock('p')} className="flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-md hover:bg-stone-100 transition" title="Párrafo">
+              <Type size={14} className="text-stone-600"/>
+              <span className="text-[9px] text-stone-500">Normal</span>
+            </button>
+            <button onClick={() => applyBlock('h1')} className="flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-md hover:bg-stone-100 transition" title="Título grande">
+              <Heading1 size={14} className="text-stone-600"/>
+              <span className="text-[9px] text-stone-500">Título</span>
+            </button>
+            <button onClick={() => applyBlock('h2')} className="flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-md hover:bg-stone-100 transition" title="Subtítulo">
+              <Heading2 size={14} className="text-stone-600"/>
+              <span className="text-[9px] text-stone-500">Subt.</span>
+            </button>
+            <button onClick={() => applyBlock('h3')} className="flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-md hover:bg-stone-100 transition" title="Subtítulo chico">
+              <Heading3 size={14} className="text-stone-600"/>
+              <span className="text-[9px] text-stone-500">Subt. ch.</span>
+            </button>
+          </div>
+          <div className="grid grid-cols-4 gap-1 mb-2 pb-2 border-b border-stone-100">
+            <button onClick={() => applyFormat('bold')} className="px-2 py-1.5 rounded-md hover:bg-stone-100 transition flex items-center justify-center" title="Negrita (Ctrl+B)">
+              <Bold size={14} className="text-stone-700"/>
+            </button>
+            <button onClick={() => applyFormat('italic')} className="px-2 py-1.5 rounded-md hover:bg-stone-100 transition flex items-center justify-center" title="Cursiva (Ctrl+I)">
+              <Italic size={14} className="text-stone-700"/>
+            </button>
+            <button onClick={() => applyFormat('underline')} className="px-2 py-1.5 rounded-md hover:bg-stone-100 transition flex items-center justify-center" title="Subrayado (Ctrl+U)">
+              <Underline size={14} className="text-stone-700"/>
+            </button>
+            <button onClick={() => applyFormat('strikethrough')} className="px-2 py-1.5 rounded-md hover:bg-stone-100 transition flex items-center justify-center" title="Tachado">
+              <Strikethrough size={14} className="text-stone-700"/>
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-1">
+            <button onClick={() => applyFormat('insertUnorderedList')} className="flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-stone-100 transition" title="Viñetas">
+              <ListBullet size={14} className="text-stone-700"/>
+              <span className="text-[10px] text-stone-600">Viñetas</span>
+            </button>
+            <button onClick={() => applyFormat('insertOrderedList')} className="flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-stone-100 transition" title="Lista numerada">
+              <ListOrdered size={14} className="text-stone-700"/>
+              <span className="text-[10px] text-stone-600">Numerada</span>
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
