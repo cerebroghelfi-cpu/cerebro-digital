@@ -616,7 +616,8 @@ export default function CerebroDigital() {
     return res;
   }, [notes, searchQuery, activeTag, activeNotebook, advancedFilters, searchIndex]);
 
-  const createNewNote = (overrides = {}) => {
+  const createNewNote = (overrides = {}, options = {}) => {
+    const { keepInList = false } = options;
     const newNote = {
       id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
       title: '', blocks: [], tags: [], connections: [],
@@ -626,7 +627,29 @@ export default function CerebroDigital() {
       ...overrides
     };
     setNotes(prev => [newNote, ...prev]);
-    setActiveNote(newNote); setView('detail');
+    if (!keepInList) { setActiveNote(newNote); setView('detail'); }
+    return newNote;
+  };
+
+  // Captura rápida: crea nota con texto y queda en la lista, sin abrir editor
+  const quickCapture = (text) => {
+    if (!text || !text.trim()) return null;
+    const trimmed = text.trim();
+    // Detectar si es URL
+    const urlRegex = /^https?:\/\/[^\s]+$/i;
+    const isUrl = urlRegex.test(trimmed);
+    const block = isUrl
+      ? { id: 'qc-' + Math.random().toString(36).slice(2, 8), type: 'link', url: trimmed, content: '' }
+      : { id: 'qc-' + Math.random().toString(36).slice(2, 8), type: 'text', content: plainToRich(trimmed) };
+    const newNote = {
+      id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+      title: '', blocks: [block], tags: [], connections: [],
+      notebookId: activeNotebook && activeNotebook !== 'inbox' ? activeNotebook : null,
+      starred: false, encrypted: false,
+      createdAt: Date.now(), updatedAt: Date.now()
+    };
+    setNotes(prev => [newNote, ...prev]);
+    return newNote;
   };
 
   const updateNote = (id, updates) => {
@@ -687,7 +710,8 @@ export default function CerebroDigital() {
           showAdvancedSearch={showAdvancedSearch} setShowAdvancedSearch={setShowAdvancedSearch}
           viewMode={viewMode} setViewMode={setViewMode}
           onOpen={(n) => { setActiveNote(n); setView('detail'); }}
-          onCreate={() => createNewNote()}
+          onCreate={(overrides) => createNewNote(overrides)}
+          onCreateAndKeep={(overrides) => createNewNote(overrides, { keepInList: true })}
           onGraph={() => setView('graph')}
           onTasks={() => setView('tasks')}
           onChat={() => setView('chat')}
@@ -697,6 +721,8 @@ export default function CerebroDigital() {
           hasSecurity={!!securityConfig}
           onUpdate={updateNote}
           onDelete={deleteNote}
+          onQuickCapture={quickCapture}
+          onOpenById={(id) => { const n = notes.find(x => x.id === id); if (n) { setActiveNote(n); setView('detail'); }}}
           driveConnected={driveConnected}
           syncStatus={syncStatus}
           onManualSync={manualSync}
@@ -853,7 +879,71 @@ function SyncBadge({ status, onClick }) {
 }
 
 // ============== GRID VIEW ==============
-function GridView({ notes, allNotes, notebooks, searchQuery, setSearchQuery, activeTag, setActiveTag, activeNotebook, setActiveNotebook, allTags, showTagFilter, setShowTagFilter, advancedFilters, setAdvancedFilters, showAdvancedSearch, setShowAdvancedSearch, viewMode, setViewMode, onOpen, onCreate, onGraph, onTasks, onChat, onExport, onSettings, onNotebooks, hasSecurity, onUpdate, onDelete, driveConnected, syncStatus, onManualSync }) {
+function GridView({ notes, allNotes, notebooks, searchQuery, setSearchQuery, activeTag, setActiveTag, activeNotebook, setActiveNotebook, allTags, showTagFilter, setShowTagFilter, advancedFilters, setAdvancedFilters, showAdvancedSearch, setShowAdvancedSearch, viewMode, setViewMode, onOpen, onCreate, onCreateAndKeep, onGraph, onTasks, onChat, onExport, onSettings, onNotebooks, hasSecurity, onUpdate, onDelete, onQuickCapture, onOpenById, driveConnected, syncStatus, onManualSync }) {
+  const [quickText, setQuickText] = useState('');
+  const [lastCapturedId, setLastCapturedId] = useState(null);
+  const [captureBurst, setCaptureBurst] = useState(false);
+  const [searchHistory, setSearchHistory] = useState([]);
+  const cameraInputRef = useRef();
+
+  // Cargar historial de búsquedas
+  useEffect(() => {
+    try {
+      const h = localStorage.getItem('brain-search-history');
+      if (h) setSearchHistory(JSON.parse(h));
+    } catch (e) {}
+  }, []);
+
+  // Guardar búsqueda al hacer búsqueda real (debounce 1s)
+  useEffect(() => {
+    if (!searchQuery.trim() || searchQuery.length < 2) return;
+    const t = setTimeout(() => {
+      const q = searchQuery.trim();
+      setSearchHistory(prev => {
+        const next = [q, ...prev.filter(x => x.toLowerCase() !== q.toLowerCase())].slice(0, 8);
+        try { localStorage.setItem('brain-search-history', JSON.stringify(next)); } catch (e) {}
+        return next;
+      });
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
+
+  const removeSearchHistory = (q) => {
+    setSearchHistory(prev => {
+      const next = prev.filter(x => x !== q);
+      try { localStorage.setItem('brain-search-history', JSON.stringify(next)); } catch (e) {}
+      return next;
+    });
+  };
+
+  // Captura rápida
+  const handleQuickCapture = () => {
+    if (!quickText.trim()) return;
+    const note = onQuickCapture(quickText);
+    setQuickText('');
+    if (note) {
+      setLastCapturedId(note.id);
+      // ocultar el botón "Abrir" después de 5 segundos
+      setTimeout(() => setLastCapturedId(prev => prev === note.id ? null : prev), 5000);
+    }
+  };
+
+  // Foto rápida: dispara cámara y crea nota con esa foto, sin abrir editor
+  const handleQuickPhoto = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const block = { id: 'qp-' + Math.random().toString(36).slice(2, 8), type: 'image', imageData: ev.target.result };
+      const newNote = onCreateAndKeep({ blocks: [block] });
+      if (newNote) {
+        setLastCapturedId(newNote.id);
+        setTimeout(() => setLastCapturedId(prev => prev === newNote.id ? null : prev), 5000);
+      }
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
   const [showMenu, setShowMenu] = useState(false);
   const starred = notes.filter(n => n.starred);
   const currentNotebook = activeNotebook && activeNotebook !== 'inbox' ? notebooks.find(n => n.id === activeNotebook) : null;
@@ -903,6 +993,85 @@ function GridView({ notes, allNotes, notebooks, searchQuery, setSearchQuery, act
           </div>
 
           {showAdvancedSearch && <AdvancedSearchPanel filters={advancedFilters} setFilters={setAdvancedFilters} />}
+
+          {/* HISTORIAL DE BÚSQUEDAS: aparece bajo el buscador cuando está enfocado y vacío */}
+          {searchQuery === '' && searchHistory.length > 0 && (
+            <details className="mt-2 group">
+              <summary className="cursor-pointer text-[10px] text-stone-400 hover:text-stone-700 flex items-center gap-1 list-none">
+                <Clock size={10} />
+                <span>Búsquedas recientes ({searchHistory.length})</span>
+                <ChevronDown size={10} className="group-open:rotate-180 transition-transform" />
+              </summary>
+              <div className="mt-2 flex flex-wrap gap-1.5 pl-1">
+                {searchHistory.map((q, i) => (
+                  <div key={i} className="inline-flex items-center bg-stone-100 hover:bg-stone-200 rounded-full transition group/h">
+                    <button onClick={() => setSearchQuery(q)} className="pl-2.5 pr-1 py-1 text-[11px] text-stone-700">{q}</button>
+                    <button onClick={(e) => { e.stopPropagation(); removeSearchHistory(q); }} className="pr-2 pl-0.5 py-1 text-stone-400 hover:text-rose-500" title="Quitar del historial">
+                      <X size={10}/>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+
+          {/* CAPTURA RÁPIDA: campo de texto + botones de foto y ráfaga */}
+          <div className="mt-3 flex gap-2 items-center">
+            <div className="flex-1 relative">
+              <Plus size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" />
+              <input
+                type="text"
+                value={quickText}
+                onChange={e => setQuickText(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleQuickCapture(); }
+                }}
+                placeholder="Anotá algo rápido… (Enter)"
+                className="w-full pl-9 pr-3 py-2.5 bg-white border border-stone-200 rounded-xl text-sm focus:outline-none focus:border-stone-900 transition placeholder-stone-400"
+              />
+            </div>
+            <input
+              ref={cameraInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              onChange={handleQuickPhoto}
+              className="hidden"
+            />
+            <button
+              onClick={() => cameraInputRef.current?.click()}
+              className="w-10 h-10 rounded-xl bg-white border border-stone-200 hover:border-stone-400 flex items-center justify-center active:scale-95 transition"
+              title="Foto rápida"
+            >
+              <ImageIcon size={16} className="text-stone-700" />
+            </button>
+            <button
+              onClick={() => setCaptureBurst(!captureBurst)}
+              className={`w-10 h-10 rounded-xl flex items-center justify-center active:scale-95 transition border ${captureBurst ? 'bg-amber-500 text-white border-amber-500' : 'bg-white border-stone-200 hover:border-stone-400 text-stone-700'}`}
+              title={captureBurst ? 'Salir del modo ráfaga' : 'Modo ráfaga: cada toque del + crea nota sin abrir editor'}
+            >
+              <Zap size={16} className={captureBurst ? 'fill-white' : ''} />
+            </button>
+          </div>
+
+          {/* Feedback de captura: aparece brevemente con link "Abrir" */}
+          {lastCapturedId && (
+            <div className="mt-2 flex items-center justify-between bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-1.5 fade-up">
+              <span className="text-[11px] text-emerald-800 flex items-center gap-1.5">
+                <CheckCircle2 size={11} /> Nota creada
+              </span>
+              <button onClick={() => { onOpenById(lastCapturedId); setLastCapturedId(null); }} className="text-[11px] font-semibold text-emerald-700 hover:underline">
+                Abrir →
+              </button>
+            </div>
+          )}
+
+          {captureBurst && (
+            <div className="mt-2 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-800 flex items-center gap-1.5 fade-up">
+              <Zap size={11} className="fill-amber-600 text-amber-600" />
+              Modo ráfaga activo · cada nota se crea sin abrir el editor
+            </div>
+          )}
 
           {/* Selector de vista */}
           <div className="mt-3 flex items-center justify-between">
@@ -1002,7 +1171,25 @@ function GridView({ notes, allNotes, notebooks, searchQuery, setSearchQuery, act
         );
       })()}
 
-      {allNotes.length > 0 && <button onClick={onCreate} className="fixed bottom-6 right-5 z-40 w-14 h-14 rounded-full bg-stone-900 text-white flex items-center justify-center shadow-xl active:scale-90 transition"><Plus size={24} /></button>}
+      {allNotes.length > 0 && (
+        <button
+          onClick={() => {
+            if (captureBurst) {
+              const note = onCreateAndKeep({});
+              if (note) {
+                setLastCapturedId(note.id);
+                setTimeout(() => setLastCapturedId(prev => prev === note.id ? null : prev), 5000);
+              }
+            } else {
+              onCreate();
+            }
+          }}
+          className={`fixed bottom-6 right-5 z-40 w-14 h-14 rounded-full text-white flex items-center justify-center shadow-xl active:scale-90 transition ${captureBurst ? 'bg-amber-500' : 'bg-stone-900'}`}
+          title={captureBurst ? 'Crear nota vacía (ráfaga)' : 'Nueva nota'}
+        >
+          {captureBurst ? <Zap size={22} className="fill-white" /> : <Plus size={24} />}
+        </button>
+      )}
     </div>
   );
 }
@@ -1604,15 +1791,18 @@ function DetailView({ note, allNotes, notebooks, searchIndex, onBack, onUpdate, 
   const [decryptedBlocks, setDecryptedBlocks] = useState(null);
   const [decryptPassword, setDecryptPassword] = useState(null);
   const [askDecrypt, setAskDecrypt] = useState(false);
+  const [urlSuggestion, setUrlSuggestion] = useState(null); // { url, text } cuando se pega una URL
   const titleTimeoutRef = useRef();
 
   useEffect(() => { setTitle(note.title || ''); if (note.encrypted && !decryptedBlocks) setAskDecrypt(true); }, [note.id]);
 
-  // Pegar imagen
+  // Pegar imagen o URL
   useEffect(() => {
     const handlePaste = (e) => {
       if (note.encrypted && !decryptedBlocks) return;
       const items = e.clipboardData?.items; if (!items) return;
+
+      // Primero buscar imagen
       for (const item of items) {
         if (item.type.startsWith('image/')) {
           e.preventDefault();
@@ -1620,13 +1810,30 @@ function DetailView({ note, allNotes, notebooks, searchIndex, onBack, onUpdate, 
           const reader = new FileReader();
           reader.onload = (ev) => { const nb = { id: newBlockId(), type: 'image', imageData: ev.target.result }; updateBlocks([...visibleBlocks, nb]); };
           reader.readAsDataURL(file);
-          break;
+          return;
         }
+      }
+
+      // Detectar URL en texto pegado (sin interrumpir el pegado normal)
+      const pastedText = e.clipboardData?.getData('text/plain') || '';
+      const trimmed = pastedText.trim();
+      const urlRegex = /^https?:\/\/[^\s]+$/i;
+      // Solo si lo pegado es exactamente una URL (no texto con URL embebida)
+      if (urlRegex.test(trimmed) && trimmed.length < 500) {
+        // No interrumpimos el pegado, ofrecemos convertir
+        setTimeout(() => setUrlSuggestion({ url: trimmed }), 50);
       }
     };
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
-  }, [note.id, decryptedBlocks, decryptPassword]);
+  }, [note.id, decryptedBlocks, decryptPassword, visibleBlocks]);
+
+  const acceptUrlSuggestion = () => {
+    if (!urlSuggestion) return;
+    const nb = { id: newBlockId(), type: 'link', url: urlSuggestion.url, content: '' };
+    updateBlocks([...visibleBlocks, nb]);
+    setUrlSuggestion(null);
+  };
 
   const handleTitleChange = (val) => { setTitle(val); clearTimeout(titleTimeoutRef.current); titleTimeoutRef.current = setTimeout(() => onUpdate(note.id, { title: val }), 400); };
 
@@ -1894,6 +2101,25 @@ function DetailView({ note, allNotes, notebooks, searchIndex, onBack, onUpdate, 
           <p className="text-[10px] text-stone-400 text-center mt-2">Tus cambios ya se guardan automáticamente mientras escribes</p>
         </div>
       </div>
+
+      {/* Sugerencia tras pegar URL */}
+      {urlSuggestion && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-stone-900 text-white rounded-2xl shadow-2xl px-4 py-3 flex items-center gap-3 fade-up max-w-md w-[calc(100%-2rem)]">
+          <div className="w-8 h-8 rounded-lg bg-amber-500/20 flex items-center justify-center flex-shrink-0">
+            <Link2 size={15} className="text-amber-400" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-semibold">URL detectada</p>
+            <p className="text-[10px] text-stone-400 truncate">{urlSuggestion.url}</p>
+          </div>
+          <button onClick={acceptUrlSuggestion} className="px-3 py-1.5 bg-amber-500 text-stone-900 rounded-lg text-xs font-semibold flex-shrink-0">
+            Convertir
+          </button>
+          <button onClick={() => setUrlSuggestion(null)} className="w-7 h-7 rounded-lg hover:bg-stone-800 flex items-center justify-center flex-shrink-0">
+            <X size={14} className="text-stone-400" />
+          </button>
+        </div>
+      )}
 
       {confirmDelete && <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-5" onClick={() => setConfirmDelete(false)}><div className="bg-white rounded-2xl p-6 max-w-sm w-full" onClick={e => e.stopPropagation()}><h3 className="display text-xl font-semibold mb-2">¿Eliminar nota?</h3><p className="text-sm text-stone-500 mb-5">Esta acción no se puede deshacer.</p><div className="flex gap-2"><button onClick={() => setConfirmDelete(false)} className="flex-1 py-2.5 border border-stone-300 rounded-xl text-sm font-medium">Cancelar</button><button onClick={() => onDelete(note.id)} className="flex-1 py-2.5 bg-rose-500 text-white rounded-xl text-sm font-medium">Eliminar</button></div></div></div>}
       {/* SELECTOR DE COLOR */}
